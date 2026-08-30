@@ -1,7 +1,7 @@
 # PLAN DIRECTEUR — Liteforms, l'appliance à hologramme (Mini-PC + Looking Glass)
 
 > Document de travail unique, issu de l'échange complet. Il sert de **base de référence** pour toute la suite du projet.
-> Dernière mise à jour : 30/08/2026.
+> Dernière mise à jour : 30/08/2026 — **enrichi** : support Linux du bridge vérifié (officiel), choix mobile **RN/Expo**, flux de fabrication (image dorée), estimations de portage mobile.
 
 ---
 
@@ -31,7 +31,7 @@ Ce document couvre l'ensemble, avec états, difficultés, risques, chiffres et p
 |---|---|---|---|
 | `C:\dev\liteforms-web` | Repo « web » : **31 commits `Jarvis:`** à porter | origine GitHub (ChChristophe) | HEAD = `9fc237f` (calcul realtime) |
 | `C:\dev\liteforms-electron` | **Workspace de dev** (travail non commité : holo, systray, port alcove…) | origin `Looking-Glass/liteforms-web` | working tree divergent, **rien commité** |
-| `C:\dev\electron\liteforms-electron` | **Fork privé / base de travail** (5 commits `Jarvis:` créés localement, **jamais poussés**) | `git@github.com:ChChristophe/liteforms-electron.git` | HEAD `52dcd05` + 5 commits locaux ; working tree propre |
+| `C:\dev\electron\liteforms-electron` | **Fork privé / base de travail** (6 commits `Jarvis:` créés localement, **jamais poussés**) | `git@github.com:ChChristophe/liteforms-electron.git` | HEAD `52dcd05` + 6 commits locaux ; working tree propre |
 
 **Topologie git** : ancêtre commun `7fa7670`. Puis :
 - côté Electron : `5fdad0c` (fix calibration bridge) → `4dbecb1` (build ouvre une fenêtre) → `52dcd05` (fullscreen + suppression d'UI) ;
@@ -55,13 +55,14 @@ Ce document couvre l'ensemble, avec états, difficultés, risques, chiffres et p
 - **11 warnings eslint pré-existants** dans `ChatPanel.tsx` (lignes non touchées).
 - **Persistance** : `localStorage` (`sessionConfig.ts`, `characterConfig.ts`, clé onboarding, `environmentConfig.ts`) + **IndexedDB** (DB `liteforms` : `indexedDbCredentialRepository.ts`, `indexedDbVrmRepository.ts`). Dossier `%APPDATA%\liteforms-web` (userData). Par origine. `/hologram` n'écrit rien.
 
-### 1.4 Les 5 commits `Jarvis:` (base du miroir)
+### 1.4 Les 6 commits `Jarvis:` (base du miroir)
 
 1. `ba4f8e7` — **fix packaged Next server location** : standalone copié dans `resources/next` (`afterPack` `cpSync .next/standalone`), `resolveStandaloneDir`, excludes tsconfig.
 2. `8e395fe` — **add app in systray with logo** : tray/park hors-écran/`setSkipTaskbar`, `resources/` (icon.ico, icon-256.png, icon-32.png), `scripts/generate-icons.mjs`, `win.icon`.
 3. `f7a51ea` — **add diagnostics log and hologram DOM/probe instrumentation** : `diagnosticLog.ts`, preload, `writeDiagnostic`/`wireWebContentsDiagnostics`, pageLogRef.
 4. `f219bf8` — **add hologram window on the Looking Glass display** : `windowOpenPolicy`, `hologramWindow.ts`, code intermédiaire du protocol/bridge/page holo.
 5. `bdde1f8` — **relay TTS and realtime voice into the hologram window for lip-sync** : ChatPanel final + protocol/bridge/page holo finaux.
+6. `759174d` — **add master plan for the Liteforms appliance roadmap** : ce `PLAN_DIRECTEUR.md`.
 
 **Règle de travail** : commits `Jarvis: <sujet anglais>`, créés localement dans le miroir, **aucun push sans accord**.
 
@@ -201,15 +202,15 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 **Vérif** : après chaque groupe — `npm test`, `npm run lint`, `npx tsc --noEmit`, build.
 **Difficulté cumulée** : ~2/10 (logique pure) à 7/10 (wake word). **Faisabilité : 9/10.**
 
-### Phase 1 — LE PARI : l'holo sur Linux (à tester en premier)
-**Objectif** : preuve que le Looking Glass rend correctement depuis un Mini-PC **Linux**, avant tout investissement produit.
-**Livrables** :
-- build `AppImage`/`.deb` (x86_64) — **le build doit se faire sur Linux** ;
-- driver d'affichage LKG sur Linux : **fallback HLD (compositor logiciel)** OU **bridge Python**.
-- le bridge Python est faisable : `electron/nativeBridge.ts` spawn déjà un sous-processus (`nativeBridgeProbe.js`) renvoyant la calibration en JSON sur fd 3 → même pattern pour un probe Python.
+### Phase 1 — L'holo sur Linux (à tester en premier — risque **rétrogradé**)
+**Objectif** : preuve que le Looking Glass rend correctement depuis un Mini-PC **Linux**.
+**⚠ État 30/08/2026** : le chemin **officiel existe** (voir §6.1/§6.10). Le Bridge Looking Glass a une **version Linux 2.6.3** (installateur Ubuntu `.sh`), exige **X11** (Wayland non supporté). Plus le SDK natif était Win/Mac ; on dispose désormais de **bridge.js** (websocket, OS-indépendant, déjà embarqué dans l'app) et du **Bridge-Python-SDK officiel** (wheels manylinux x86-64/arm64 avec driver embarqué). Reste **3 validations** (week-end) :
+1. Ubuntu **24.04 LTS X11** + build **AppImage/.deb sur Linux** (x86_64) ;
+2. **Bridge 2.6.3** opérationnel + le **probe natif** échoue gracieusement → le path **websocket JS** prend le relais (`bridge.js`) ; vérifier compat version du `@lookingglass/bridge@0.0.8-alpha.4` embarqué ;
+3. **Énumération du LKG en affichage DRM** via le port USB-C (DP alt mode) — la pièce hardware à vérifier.
+**Fallback en secours** : HLD (compositor logiciel, déjà en place) → sinon Bridge-Python-SDK.
 **Critère de sortie** : qualité d'image/sync acceptable sur l'appareil.
-**Difficulté : 5–6/10. Faisabilité : 9/10.**
-**⚠ Risque n°1 du projet** : si l'image LKG est mauvaise sous Linux, tout le reste (provisioning, mobile, appliance) perd sa valeur.
+**Difficulté : 3–4/10 (configuration, plus un pari). Faisabilité : 9,5/10.**
 
 ### Phase 2 — POC config téléphone → live
 **Objectif** : config maîtrisée depuis le téléphone, appliquée en direct, **sans hotspot**.
@@ -217,9 +218,10 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 - route `POST /api/device-config` + **token minimal** (§4/§6.3) ;
 - `GET /api/device-config` (statut/lecture, bonus utile) ;
 - watcher ou polling → événement IPC → `applyDeviceConfig()` ;
-- app mobile (projet séparé) : UI config + saisie `IP` + `code d'appairage`.
-**Critère de sortie** : pousser `alcoveColor`, `character`, un provider LLM/TTS, un VRM depuis le téléphone → appliqués **à chaud**.
+- **app mobile (Expo/React Native)** : écrans config + preview 3D + saisie `IP` + `code d'appairage`.
+**Critère de sortie** : pousser `alcoveColor`, `character`, un provider LLM/TTS, un VRM depuis le téléphone → appliqués **à chaud** ; l'aperçu 3D montre le VRM + la couleur d'alcove en direct sur le téléphone.
 **Difficulté côté Electron : 3–4/10. Faisabilité : 9–10/10.**
+**Difficulté côté mobile (avec preview 3D) : ~6/10. Faisabilité : 8–9/10.** (détails §6.9)
 
 ### Phase 3 — Le confort appliance
 **Objectif** : l'expérience « on le branche, ça marche ».
@@ -240,10 +242,13 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 
 ## 6. Points de difficulté & risques (détaillés)
 
-### 6.1 (Critique) Driver Looking Glass sous Linux — voir Phase 1
-- Bridge natif actuel : **Windows (`win32-x64`) et macOS uniquement**.
-- Options Linux : fallback **HLD** (compositor logiciel, déjà dans le code) ou **bridge Python** (pattern subprocess à réutiliser).
-- **À valider AVANT tout le reste** (le produit = le LKG).
+### 6.1 (Rétrogradé) Driver/affichage Looking Glass sous Linux — voir Phase 1
+- **Élément clos à 30/08/2026** : le support Linux est **officiel** (voir §6.10). Looking Glass Bridge **2.6.3** sort en installateur Ubuntu ; le SDK natif (samples C++/C#) exige **X11, Wayland non supporté** ; la note vaut aussi pour les chemins JS et Python.
+- Chemins disponibles sur Linux, du préféré au repli :
+  1. **bridge.js** (websocket localhost) — l'app Electrons embarque déjà `@lookingglass/bridge` → **0 ligne à écrire**, à valider sur Linux (§6.10) ;
+  2. **Bridge-Python-SDK** (`pip install bridge-python-sdk`) — wheels manylinux x86-64/arm64, **driver Bridge embarqué** (exemples `RotatingCube`, `SolarSystem`, `DisplayQuilt`, `DisplayRGBD`) ;
+  3. **HLD** (compositor logiciel, déjà dans le code) — fallback pur.
+- **Restent à valider** (semaine/week-end Phase 1) : distro Ubuntu éligible, énumération DRM du LKG en USB-C (DP alt mode), bascule du probe natif vers le websocket.
 
 ### 6.2 Privilèges Wi-Fi / NetworkManager
 - `nmcli` (hotspot, rejoindre un réseau) = **root**.
@@ -279,8 +284,30 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 - Build **obligatoirement sur Linux** (AppImage/.deb, x86_64).
 - Signature (optionnel au POC, à planifier) + **auto-update** (compatible electron-builder target `AppImage` → `update-server` ou repo GitHub Releases).
 
-### 6.9 Android/iOS : le projet mobile (séparé)
-- C'est **la vraie masse de travail UI** (détection de l'appliance, saisie Wi-Fi, provisioning, écran de config) — hors périmètre Electron, mais nécessite le contrat d'API (routes + payload) défini au §4.
+### 6.9 Mobile : stack choisie + preview 3D (décision 30/08/2026)
+- **Choix techno : React Native (Expo, managed workflow)** — **pas Flutter**. Raison décisive : le pipeline avatar (~5 000 lignes testées de three.js/VRM dans `lib/avatar/`) s'exécute **tel quel** via `expo-gl` ; Flutter imposerait une réécriture totale du pipeline 3D en Dart. Toute la pile produit reste en **TS/React** (web + Electron + mobile partagent `lib/avatar/`, `lib/storage/`, zustand).
+- **Builds** : **Android** via `eas build -p android` → **APK** (direct) et **AAB** (Play Store) ; **iOS** → **IPA** via **EAS Build cloud (sans Mac)**, distribution App Store/TestFlight avec compte Apple (99 $/an). Développement de l'app sur device via **Expo Go** (zéro build).
+- **Ce qu'on porte** (config UI, ~4/10) : panneau « Character » de `ChatPanel.tsx` (nom, pronoms, personnalité), humeur (`MOOD_OPTIONS`), couleur alcove (`HEX_COLOR_PATTERN`), choix VRM (document-picker + upload binaire), + **nouveau picker d'animation** (la liste existe déjà dans `animationOptions.ts`, pas d'UI web). Les validateurs de `lib/storage/*` sont du TS pur → reproduits tels quels.
+- **Preview 3D (difficulté ~6/10, faisabilité 8/10 — c'est le « waou » démo)** : port du **noyau** d'`AvatarScene.tsx` (scène, lumières, `GLTFLoader` + VRM + choration, `environmentLoader` pour l'alcove en direct, mood, animations) sur **`expo-gl` + three** ; on **jette** la partie exécutive LKG (webxr polyfill, `VRButton`, `hologramWindow`, HLD shadow compositor, événements fenêtre) et on la remplace par « preview perspective » + drag rotation (`PanResponder` + `modelDragRotation`). Assets servis par l'Electron sur le LAN (`fetch`). Plan de repli si MToon/WebGL2 foire : **snapshot live** renderé par l'Electron renvoyé en image.
+- **Attention build native** : permissions **LAN** — iOS `NSLocalNetworkUsageDescription` (« app would like to find and connect to devices… »), Android `NEARBY_WIFI_DEVICES`/mDNS ; caler le color picker (pas de `<input type="color">` natif RN) et `react-native-document-picker` pour le `.vrm` tôt.
+- **Périmètre exclu du mobile** : `ChatPanel` exécutif (streaming/micro/wake word — reste dans l'Electron), `OnboardingModal` providers/credentials (**secrets au desktop, jamais sur le téléphone**), tous les modules `lib/speech`, `lib/llm`.
+- **Note** : pas besoin de porter les 31 commits web pour le POC mobile — juste le contrat d'API §4 + les setters déjà existants côté Electron.
+
+### 6.10 Chemins officiels bridge (vérifiés 30/08/2026)
+- **Looking Glass Bridge (runtime) — Linux ✓** : téléchargeable page officielle (bouton « Linux Download » → `https://look.glass/bridge-linux`) ; v2.6.3 en `LookingGlassBridge-2.6.3-Ubuntu.sh` (installer : `chmod +x` ; `./`.sh) ; doc « Looking Glass Bridge … is available for Windows, MacOS (M1/Intel) and **Linux-based systems** » + page dédiée « Display Settings on Linux ». **Contrainte : X11 requis, Wayland non supporté** (confirmé aussi par le README du SDK natif).
+- **bridge-sdk-samples** (`github.com/Looking-Glass/bridge-sdk-samples`) : SDK **natif** (C++/C#), headers dans `BridgeRuntime/`, samples CMake/GLFW ; requis pour le « bridge natif » Win/Mac ; même note X11/Wayland. Le Bridge installé fournit les libs requises.
+- **bridge.js** (`github.com/Looking-Glass/bridge.js` → npm `@looking-glass/bridge`, MIT) : client **JS via websocket localhost** vers Bridge 2.2+. **OS-indépendant**. C'est **le `@looking-glass/bridge` déjà embarqué** dans l'app Electron (`^0.0.8-alpha.4`) → valider la compat avec Bridge 2.6.3, éventuellement bump vers la version officielle stable.
+- **Bridge-Python-SDK** (`github.com/Looking-Glass/Bridge-Python-SDK`, MIT) : `pip install bridge-python-sdk` ; **wheels Windows (x86-64), macOS (universal2), manylinux (x86-64/arm64)** ; **le driver Bridge est embarqué dans le wheel** → `pip install` + OpenGL + quilt + X11. Exemples inclus ; bémol documenté : sample *video* « not at full speed » (sans impact pour la scène 3D temps-réel). = le **fallback Python officiel** (plus besoin de bridge Python artisanal).
+- **Looking Glass Go (USB-C unique)** : conforme au design « que le LKG en USB-C 3.2 » — le câble transporte power + video ; à confirmer comme affichage DRM sous Linux (Phase 1).
+
+### 6.11 Fabrication des unités (image dorée + provisioning)
+- **Schéma de production** : **image dorée pour l'usine + script versionné pour la fabriquer**, et **provisioning par unité pour l'individualisation**.
+  1. Valider le pipeline UNE fois (avec un écran) : install OS + drivers + Xorg + Bridge 2.6.3 + app Electron + services ;
+  2. Générer l'**image dorée** (Clonezilla/rescuezilla) depuis l'unité de référence ;
+  3. Chaque unité : **flash image → boot → provisioning (hotspot + téléphone)** fournit Wi-Fi + appairage + `device_id` → **plus jamais d'écran** ;
+  4. SSH couvre le dépannage.
+- **Pièges** : **jamais cuire le Wi-Fi perso, les tokens ou les secrets dans l'image** (tout est fourni au premier boot par unité) ; l'image suppose un **hardware identique** (changer de mini-PC → régénérer) → d'où le script versionné conservé.
+- **Reco Linux : Ubuntu 24.04 LTS, session X11** (pas Wayland : tray/appindicator + fenêtres plein écran fiables), **GPU Intel/AMD intégré** (éviter NVIDIA), NetworkManager (nmcli) + avahi par défaut. Version **appliance minimale** pour l'image : Ubuntu Server + `xorg openbox tint2 xinit dbus` (tint2 héberge le tray où l'app se cache). Tester d'abord en Ubuntu Desktop (GNOME, X11) pour le debug, puis slimmer l'image dorée. **Vigilance hardware** : le port USB-C du mini-PC doit supporter **DisplayPort Alt Mode**, sinon aucune image possible.
 
 ---
 
@@ -291,6 +318,8 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 - **Relais holo** : `postMessage` avec origine `hologramMessageOrigin` ; protocole dans `lib/avatar/hologramMessageProtocol.ts` ; frames RMS via `lipSyncEvents.ts`/`createRmsLipSyncFrame`.
 - **Cross-window config** : événement `storage` (même origine) — utilisé pour l'alcove ; `saveEnvironmentConfig` → l'événement `storage` déclenche dans `/hologram`.
 - **Bridge natif** : `electron/nativeBridge.ts` spawn `nativeBridgeProbe.js` (JSON sur fd 3) ; calibration par `applyNativeLookingGlassBridgeCalibration`. Pattern réutilisable pour un probe Python sous Linux.
+- **Bridge Linux (official)** : looking-glass-bridge 2.6.3 `.sh` (X11) → `https://look.glass/bridge-linux` ; chemin JS via websocket localhost (`@looking-glass/bridge`, 0 ligne à écrire) ; fallback `pip install bridge-python-sdk` (wheels manylinux).
+- **Mobile** : `eas build -p android` → APK/AAB ; `-p ios` → IPA via EAS cloud (compte Apple pour disctribution/TestFlight) ; preview 3D = `expo-gl` + three + noyau `lib/avatar` ; assets servis par l'Electron sur le LAN.
 - **Nommage commits** : `Jarvis: <sujet anglais descriptif>`.
 - **Règles** : **jamais de push** sans accord ; ne rien supprimer ; demander en cas de doute ; commit seulement sur demande explicite (miroir).
 - **Tests de non-régression** : `npm test`, `npm run lint`, `npx tsc --noEmit` (ignorer les erreurs pré-existantes listées §1.3), puis `npm run build:electron:main` / `npm run dist:electron`.
@@ -308,15 +337,22 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 - [ ] À chaque groupe : tests + lint + tsc + build.
 
 **Appliance / POC config**
+- [ ] **Prioritaire** : week-end Phase 1 — Bridge 2.6.3 sur Ubuntu 24.04 X11, bascule du probe natif → websocket JS, énumération DRM du LKG Go en USB-C, build AppImage/.deb sur Linux.
 - [ ] API `POST /api/device-config` + token minimal + `GET` de statut (§4).
 - [ ] `indexedDbVrmRepository` : `list()`/`loadByName()`.
 - [ ] `applyDeviceConfig()` (réutilise setters + remontage ChatPanel) + événement live (polling d'abord).
 - [ ] Serveur Next en écoute LAN + gestion pare-feu (test Windows puis Linux).
-- [ ] App mobile : contrat d'API + UI config + écran appairage (projet séparé).
+
+**App mobile (Expo/React Native — projet séparé, ∼2–3 semaines d'agent)**
+- [ ] Scaffold Expo + navigation + écrans config (caractère, humeur, alcove, **picker d'animation**), validateurs `lib/storage` reproduits.
+- [ ] Upload VRM (document-picker + multipart) + choix par référence.
+- [ ] Client API typé + saisie IP/token (POC) puis découverte.
+- [ ] **Preview 3D** (`expo-gl` + three + noyau `lib/avatar` ; jeter la partie LKG/exec) — tester vite MToon/WebGL2 ; sinon snapshot live.
+- [ ] Permissions LAN (iOS/Android) + build `eas build -p android` (APK).
 
 **Kiosque Linux (plus tard)**
-- [ ] **Prioritaire** : valider l'holo sur Linux (HLD ou bridge Python) — Phase 1.
 - [ ] Build AppImage/.deb sur Linux, autostart, mDNS, provisioning hotspot (nmcli + polkit), pairing complet, auto-update (Phases 3–4).
+- [ ] Fabrication : image dorée + script versionné + provisioning par unité (jamais de secrets/Wi-Fi dans l'image, §6.11).
 
 ---
 
@@ -328,8 +364,10 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 | API config téléphone (POC) | 3–4/10 | 9–10/10 |
 | Live apply (sans reboot) | 2/10 | 10/10 (settlers existants) |
 | Provisioning hotspot + pairing | 5–6/10 | 9/10 |
-| **Holo sur Linux (LE PARI)** | 5–6/10 | 9/10 |
+| **Holo sur Linux (chemin officiel — §6.1/§6.10)** | **3–4/10** | **9,5/10** |
+| **Mobile config UI (Expo)** | **4/10** | 9–10/10 |
+| **Mobile preview 3D (expo-gl)** | **6/10** | **8/10** |
 | Sécurité durcie (phase 4) | 3/10 | 9/10 |
-| App mobile (hors Electron) | projet séparé | — |
+| App mobile (hors Electron) | projet séparé | 2–3 semaines d'agent |
 
-**Risque n°1 : le driver Looking Glass sous Linux. Risque n°2 : la robustesse privilèges Wi-Fi. Piège de portée : 3 projets imbriqués → POC strict = Phase 1 + Phase 2.**
+**Risques actualisés (30/08/2026)** : le driver LKG sous Linux n'est **plus** un pari (chemin officiel) — reste l'**énumération USB-C du LKG** et la meta de l'**image dorée**/hardware. Risque n°2 conservé : robustesse privilèges Wi-Fi. **Piège de portée** : 3 projets imbriqués → POC strict = Phase 1 + Phase 2.
