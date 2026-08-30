@@ -1,10 +1,13 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, powerSaveBlocker, shell, Tray } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, powerSaveBlocker, screen, shell, Tray } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerNativeBridgeIpc } from "./nativeBridge";
 import { createNextServerEnv, getAvailablePort, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
 import { isExternalUrl, resolveWindowOpenRequest } from "./windowOpenPolicy";
+
+const diagnosticLogChannel = "liteforms:diagnostic:log";
+const preloadLoadedChannel = "liteforms:preload:loaded";
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -13,6 +16,37 @@ let appUrl: string | null = null;
 let lastWindowBounds: Electron.Rectangle | null = null;
 let windowHiddenForBackground = false;
 const nativeBridgeService = registerNativeBridgeIpc(ipcMain);
+
+function diagnosticLogPath(): string {
+  try {
+    return join(app.getPath("userData"), "liteforms-diagnostic.log");
+  } catch {
+    return "liteforms-diagnostic.log";
+  }
+}
+
+function writeDiagnostic(line: string): void {
+  try {
+    const stamp = new Date().toISOString();
+    appendFileSync(diagnosticLogPath(), `[${stamp}] ${line}\n`, "utf8");
+  } catch (err) {
+    // never let a diagnostic write break the app; surface the failure path once
+    try {
+      const stamp = new Date().toISOString();
+      appendFileSync("liteforms-diagnostic.log", `[${stamp}] DIAG-WRITE-FAIL ${String(err)} :: target=${diagnosticLogPath()}\n`, "utf8");
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+ipcMain.handle(diagnosticLogChannel, (_event, line: unknown) => {
+  writeDiagnostic(`[renderer] ${String(line)}`);
+});
+
+ipcMain.handle(preloadLoadedChannel, (_event, info: unknown) => {
+  writeDiagnostic(`[preload] loaded :: ${String(info)}`);
+});
 
 // Prevent Chromium from throttling requestAnimationFrame / rendering in the
 // renderer when the window is minimized or occluded. `backgroundThrottling:false`
@@ -195,10 +229,17 @@ function createWindow(url: string) {
   wireTrayRestoreBehavior(mainWindow);
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
+    writeDiagnostic(
+      `[windowOpen] url=${details.url} frameName=${details.frameName} features=${String(details.features)}`
+    );
     const decision = resolveWindowOpenRequest(details, allowedOrigin);
     if (decision.externalUrl) {
       void shell.openExternal(decision.externalUrl);
     }
+    writeDiagnostic(
+      `[windowOpen →] frameName=${details.frameName} action=${decision.response.action} ` +
+      `override=${decision.response.overrideBrowserWindowOptions ? "yes" : "no"}`
+    );
     return decision.response;
   });
 
@@ -210,7 +251,156 @@ function createWindow(url: string) {
     void shell.openExternal(targetUrl);
   });
 
+  wireWebContentsDiagnostics(mainWindow, "main");
+
   void mainWindow.loadURL(url);
+}
+
+function wireWebContentsDiagnostics(win: BrowserWindow, label: string) {
+  // For the /hologram child window, sample the DOM geometry every ~1.5s so a
+  // misplaced quilt canvas / collapsed container is visible in the diagnostic
+  // log (this is how the "black background + white left border" was diagnosed).
+  // Screenshots (userData/debug/) are taken only when LITEFORMS_DEBUG_HOLO=1.
+  let hologramMonitorTimer: NodeJS.Timeout | undefined;
+  let hologramMonitorTicks = 0;
+  const startHologramMonitor = () => {
+    if (hologramMonitorTimer) return;
+    writeDiagnostic(`[webContents:${label}] holo-monitor start`);
+    hologramMonitorTimer = setInterval(() => {
+      hologramMonitorTicks += 1;
+      if (hologramMonitorTicks > 10) {
+        if (hologramMonitorTimer) clearInterval(hologramMonitorTimer);
+        hologramMonitorTimer = undefined;
+        // Self-test harness: stop the app once the sampling run is complete.
+        if (process.env.LITEFORMS_DEBUG_HOLO) {
+          writeDiagnostic(`[webContents:${label}] holo-monitor done`);
+          setTimeout(() => app.quit(), 250);
+        }
+        return;
+      }
+      // Probe: when LITEFORMS_DEBUG_HOLO_PROBE=1, the first N ticks hide one
+      // canvas each (so isolation captures reveal which canvas paints the white
+      // left strip), then leave everything visible.
+      const probeEnabled = process.env.LITEFORMS_DEBUG_HOLO_PROBE === "1";
+      const probeIndex = probeEnabled ? hologramMonitorTicks : 0;
+      const sampler = [
+        "(() => {",
+        "  const d = document;",
+        "  const g = (el) => { if (!el) return null; const r = el.getBoundingClientRect();",
+        "    const cs = getComputedStyle(el); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),",
+        "      bufW: el.width || 0, bufH: el.height || 0, z: cs.zIndex, fit: cs.objectFit, objPos: cs.objectPosition,",
+        "      pos: cs.position, bg: cs.backgroundColor, disp: cs.display, vis: cs.visibility, op: cs.opacity }; };",
+        "  const sel = (s) => g(d.querySelector(s));",
+        "  const canvases = [...d.querySelectorAll('canvas')];",
+        `  const probeIdx = ${probeIndex};`,
+        "  if (probeIdx > 0) canvases.forEach((c, i) => { c.style.visibility = i === probeIdx - 1 ? 'hidden' : ''; });",
+        "  return JSON.stringify({ t: Date.now(), inner: [innerWidth, innerHeight], dpr: devicePixelRatio,",
+        "    bodyBg: getComputedStyle(d.body).backgroundColor,",
+        "    stage: sel('.hologram-stage'), scene: sel('.avatar-scene'),",
+        "    controls: sel('#LookingGlassWebXRControls'),",
+        "    canvases: canvases.map(g),",
+        "    vrf: (() => { const b = d.querySelector('#VRButton'); if (!b) return null; const r = b.getBoundingClientRect();",
+        "      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), txt: (b.textContent || '').slice(0, 40) }; })()",
+        "  });",
+        "})()",
+      ].join("\n");
+      const t = Date.now();
+      void win.webContents
+        .executeJavaScript(sampler)
+        .then((result) => writeDiagnostic(`[webContents:${label}] holo-dom :: ${String(result)} (${Date.now() - t}ms)`))
+        .catch(() => {});
+      if (process.env.LITEFORMS_DEBUG_HOLO) {
+        writeDiagnostic(`[webContents:${label}] holo-capture start`);
+        win.webContents
+          .capturePage()
+          .then((image) => {
+            const dir = join(app.getPath("userData"), "debug");
+            if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+            const file = join(
+              dir,
+              probeIndex > 0 ? `holo-probe${probeIndex}-${Date.now()}.png` : `hologram-${Date.now()}.png`
+            );
+            writeDiagnostic(`[webContents:${label}] holo-capture save=${file} size=${image.getSize().width}x${image.getSize().height}`);
+            writeFileSync(file, image.toPNG());
+          })
+          .catch((err) => writeDiagnostic(`[webContents:${label}] holo-capture error ${String(err)}`));
+      }
+    }, 1500);
+    win.on("closed", () => {
+      if (hologramMonitorTimer) clearInterval(hologramMonitorTimer);
+      hologramMonitorTimer = undefined;
+    });
+  };
+
+  win.webContents.on("preload-error", (_event, preloadPath, error) => {
+    writeDiagnostic(`[webContents:${label}] preload-error :: ${preloadPath} :: ${String(error)}`);
+  });
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    writeDiagnostic(`[webContents:${label}] did-fail-load :: ${errorCode} ${errorDescription} :: ${validatedURL}`);
+  });
+  win.webContents.on("did-finish-load", () => {
+    writeDiagnostic(`[webContents:${label}] did-finish-load`);
+  });
+  // Track every top-level navigation (incl. the /hologram window's load/reloads)
+  // together with the window's position/size and which display it now fills, so a
+  // misplaced hologram window is visible directly in the diagnostic log.
+  win.webContents.on("did-navigate", (_event, url) => {
+    if (url.includes("/hologram")) startHologramMonitor();
+    try {
+      const bounds = win.getBounds();
+      const display = screen.getDisplayMatching(bounds);
+      const displayLabel = (display as unknown as { label?: string }).label ?? "";
+      writeDiagnostic(
+        `[webContents:${label}] did-navigate :: ${url} ` +
+        `bounds=${bounds.x},${bounds.y} ${bounds.width}x${bounds.height} ` +
+        `fs=${win.isFullScreen()} display="${displayLabel}" dsize=${display.size.width}x${display.size.height} ` +
+        `primary=${display.id === screen.getPrimaryDisplay().id}`
+      );
+    } catch {
+      writeDiagnostic(`[webContents:${label}] did-navigate :: ${url}`);
+    }
+  });
+  // Capture console logs/errors from the renderer — this is the surest way to see
+  // whether React hydration succeeds or throws during bootstrap.
+  win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    writeDiagnostic(`[console:${label}] ${level} :: ${String(message)} (${sourceId}:${line})`);
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    writeDiagnostic(`[webContents:${label}] render-process-gone :: ${String(details?.reason)}`);
+  });
+  win.webContents.on("did-start-loading", () => {
+    writeDiagnostic(`[webContents:${label}] did-start-loading :: ${win.webContents.getURL()}`);
+  });
+  win.webContents.on("dom-ready", () => {
+    void win.webContents
+      .executeJavaScript(
+        [
+          "(() => {",
+          "  const l = window.liteformsElectron;",
+          "  const r = {",
+          "    t: typeof l,",
+          "    diag: typeof (l && l.diagnostic && l.diagnostic.log),",
+          "    keys: l ? Object.keys(l) : [],",
+          "    pathname: window.location ? window.location.pathname : '?',",
+          "    hasHologramStage: !!document.querySelector('.hologram-stage'),",
+          "    hasAvatarScene: !!document.querySelector('.avatar-scene, canvas, .hologram-stage canvas'),",
+          "    canvases: document.querySelectorAll('canvas').length,",
+          "    bodyChildren: document.body ? document.body.children.length : -1",
+          "  };",
+          "  if (l && l.diagnostic && l.diagnostic.log) {",
+          "    try { l.diagnostic.log('RENDERER-TEST dom-ready ok'); } catch (e) { r.testErr = String(e); }",
+          "  }",
+          "  return JSON.stringify(r);",
+          "})()"
+        ].join("\n")
+      )
+      .then((result) => {
+        writeDiagnostic(`[webContents:${label}] dom-ready :: ${String(result)}`);
+      })
+      .catch((err) => {
+        writeDiagnostic(`[webContents:${label}] dom-ready-eval-error :: ${String(err)}`);
+      });
+  });
 }
 
 function stopNextServer() {
@@ -221,6 +411,11 @@ function stopNextServer() {
 }
 
 app.whenReady().then(async () => {
+  writeDiagnostic(
+    `=== app.whenReady === exe=${process.execPath} isPackaged=${app.isPackaged} ` +
+      `userData=${app.getPath("userData")} appPath=${app.getAppPath()} resources=${process.resourcesPath}`
+  );
+
   if (process.platform === "win32") {
     app.setAppUserModelId("org.liteforms.web");
   }
@@ -230,6 +425,12 @@ app.whenReady().then(async () => {
   powerSaveBlocker.start("prevent-app-suspension");
 
   Menu.setApplicationMenu(null);
+
+  // Hook diagnostics onto child windows too (e.g. the /hologram popup created via
+  // window.open). The main window is already wired by createWindow.
+  app.on("browser-window-created", (_e, win) => {
+    wireWebContentsDiagnostics(win, "child");
+  });
 
   appUrl = await resolveAppUrl();
   createWindow(appUrl);

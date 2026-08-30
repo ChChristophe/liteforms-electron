@@ -7,6 +7,7 @@ import type { CharacterConfig, LocalModelLoadState } from "@/components/chat/Cha
 import { BridgeRequiredBanner } from "@/components/looking-glass/BridgeRequiredBanner";
 import { OnboardingModal } from "@/components/onboarding/OnboardingModal";
 import { checkLookingGlassBridgeConnection } from "@/lib/avatar/bridgeConnection";
+import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import type { BaseProviderConfig } from "@/lib/llm";
 import type { AsrConfig, RealtimeVoiceConfig, TtsConfig } from "@/lib/speech";
 import { saveSessionConfig, loadSessionConfig } from "@/lib/storage/sessionConfig";
@@ -45,6 +46,24 @@ export default function HomePage() {
   const [bridgeConnected, setBridgeConnected] = useState<boolean | undefined>(undefined);
   const [isBridgeBannerDismissed, setIsBridgeBannerDismissed] = useState(false);
   const showBridgeBanner = bridgeConnected === false && !isBridgeBannerDismissed;
+
+  const pageLogReff = useRef(false);
+  if (!pageLogReff.current) {
+    pageLogReff.current = true;
+    try {
+      logDiagnostic(
+        `HomePage render | pathname=${window.location.pathname} bridge=${Boolean(
+          (window as { liteformsElectron?: unknown }).liteformsElectron
+        )}`
+      );
+    } catch (err) {
+      try {
+        logDiagnostic(`HomePage render ERROR ${String(err)}`);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
   useEffect(() => {
     const savedMode = localStorage.getItem(onboardingStorageKey);
