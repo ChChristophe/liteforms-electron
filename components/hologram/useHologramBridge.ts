@@ -6,8 +6,11 @@ import { openHldHologramWindow } from "@/lib/avatar/hologramWindow";
 import {
   buildHologramRouteUrl,
   sendLipsyncToHologram,
+  sendLiveAudioToHologram,
   sendModelBytesToHologram,
+  sendUtteranceToHologram,
 } from "@/lib/avatar/hologramMessageProtocol";
+import type { TtsResult } from "@/lib/speech";
 import { avatarLipSyncEventName, type AvatarLipSyncFrame } from "@/lib/avatar/lipSyncEvents";
 
 async function resolveShareableModel(modelUrl: string | undefined): Promise<
@@ -109,9 +112,31 @@ export function useHologramBridge() {
     setHologramActive(true);
   }, [startRelay, stopRelay, stopClosePoller]);
 
+  const handleTtsResult = useCallback((result: TtsResult): boolean => {
+    const win = holoWinRef.current;
+    if (!win || win.closed) return false;
+    sendUtteranceToHologram(win, result);
+    logDiagnostic(`holo-bridge utter forwarded mime=${result.mimeType} bytes=${result.audio.byteLength}`);
+    return true;
+  }, []);
+
+  const forwardRealtimeAudio = useCallback(async (blob: Blob): Promise<boolean> => {
+    const win = holoWinRef.current;
+    if (!win || win.closed) return false;
+    try {
+      const bytes = await blob.arrayBuffer();
+      sendLiveAudioToHologram(win, bytes);
+      logDiagnostic(`holo-bridge live-audio forwarded bytes=${bytes.byteLength}`);
+      return true;
+    } catch (err) {
+      logDiagnostic(`holo-bridge live-audio forward error ${String(err)}`);
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     return () => close();
   }, [close]);
 
-  return { hologramActive, open, close };
+  return { hologramActive, open, close, handleTtsResult, forwardRealtimeAudio };
 }

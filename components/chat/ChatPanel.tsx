@@ -63,6 +63,19 @@ type ChatPanelProps = {
   onConfigChange?: (llm: BaseProviderConfig, tts: TtsConfig, asr: AsrConfig, realtimeVoice?: RealtimeVoiceConfig) => void;
   /** Called when the user clicks the Configure button in Settings. */
   onOpenConfigure?: () => void;
+  /**
+   * Optional TTS result sink for the Looking Glass hologram window. When it
+   * returns true the segment audio is played inside the /hologram window (so the
+   * RMS lip-sync loop runs in the unfettered fullscreen renderer even when the
+   * main window is minimized) and should not be played here.
+   */
+  handleTtsForHologram?: (result: TtsResult) => boolean;
+  /**
+   * Optional live-audio sink for realtime voice (google-live / openai-realtime).
+   * When it resolves true the chunk is played + lip-synced inside the /hologram
+   * window; otherwise it is scheduled locally (fallback).
+   */
+  handleRealtimeAudioForHologram?: (blob: Blob) => Promise<boolean> | boolean;
 };
 
 type ChatStatus = "idle" | "streaming" | "error";
@@ -144,7 +157,9 @@ export function ChatPanel({
   initialRealtimeVoiceConfig,
   onLocalModelLoadStateChange,
   onConfigChange,
-  onOpenConfigure
+  onOpenConfigure,
+  handleTtsForHologram,
+  handleRealtimeAudioForHologram
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     character.greeting ? [{ role: "assistant" as const, content: character.greeting }] : []
@@ -600,7 +615,9 @@ export function ChatPanel({
             if (drainIdx < synthQueue.length) {
               const result = await synthQueue[drainIdx++];
               if (drainAborted) break;
-              await playTtsResult(result, { onLipSyncFrame: dispatchAvatarLipSyncFrame });
+              if (!handleTtsForHologram?.(result)) {
+                await playTtsResult(result, { onLipSyncFrame: dispatchAvatarLipSyncFrame });
+              }
             } else if (streamDone) {
               break;
             } else {
@@ -830,7 +847,11 @@ export function ChatPanel({
           setLastAsrDebug(`${providerLabel} said: "${text}"`);
         },
         onAudio: (audio) => {
-          scheduleAudioChunk(audio);
+          void (async () => {
+            if (!(await handleRealtimeAudioForHologram?.(audio))) {
+              scheduleAudioChunk(audio);
+            }
+          })();
         },
         onError: (caught) => {
           lipSyncActive = false;

@@ -47,7 +47,7 @@ export default function HomePage() {
   const [bridgeConnected, setBridgeConnected] = useState<boolean | undefined>(undefined);
   const [isBridgeBannerDismissed, setIsBridgeBannerDismissed] = useState(false);
   const showBridgeBanner = bridgeConnected === false && !isBridgeBannerDismissed;
-  const { hologramActive, open: openHologram, close: closeHologram } = useHologramBridge();
+  const { hologramActive, open: openHologram, close: closeHologram, handleTtsResult, forwardRealtimeAudio } = useHologramBridge();
 
   const pageLogReff = useRef(false);
   if (!pageLogReff.current) {
@@ -231,6 +231,8 @@ export default function HomePage() {
         onLocalModelLoadStateChange={handleLocalModelLoadStateChange}
         onConfigChange={handleConfigChange}
         onOpenConfigure={handleConfigureOpen}
+        handleTtsForHologram={handleTtsResult}
+        handleRealtimeAudioForHologram={forwardRealtimeAudio}
       />
       {showOnboarding && (
         <OnboardingModal

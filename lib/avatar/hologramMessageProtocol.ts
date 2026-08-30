@@ -26,12 +26,23 @@ export type HologramToMainMessage =
   | { origin: typeof hologramMessageOrigin; kind: "session-ended" }
   | { origin: typeof hologramMessageOrigin; kind: "ready" };
 
+export type HologramUtterancePayload = {
+  mimeType: string;
+  sampleRate?: number;
+  words?: Array<{ word: string; start: number; end: number }>;
+  lipSyncGain?: number;
+  lipSyncMaxWeight?: number;
+  lipSyncPreferMorphTarget?: boolean;
+};
+
 export type MainToHologramMessage =
   | { origin: typeof hologramMessageOrigin; kind: "lipsync"; frame: AvatarLipSyncFrame }
   | { origin: typeof hologramMessageOrigin; kind: "model-url"; url: string }
   | { origin: typeof hologramMessageOrigin; kind: "model-bytes"; bytes: ArrayBuffer }
   | { origin: typeof hologramMessageOrigin; kind: "enter-session" }
-  | { origin: typeof hologramMessageOrigin; kind: "exit-session" };
+  | { origin: typeof hologramMessageOrigin; kind: "exit-session" }
+  | { origin: typeof hologramMessageOrigin; kind: "utter-bytes"; utt: HologramUtterancePayload; bytes: ArrayBuffer }
+  | { origin: typeof hologramMessageOrigin; kind: "live-audio"; bytes: ArrayBuffer };
 
 export function postHologramMessage(target: Window, message: MainToHologramMessage | HologramToMainMessage) {
   target.postMessage(message, "*");
@@ -51,4 +62,24 @@ export function sendHologramCommand(target: Window, command: "enter-session" | "
 
 export async function sendModelBytesToHologram(target: Window, bytes: ArrayBuffer) {
   target.postMessage({ origin: hologramMessageOrigin, kind: "model-bytes", bytes }, "*", [bytes]);
+}
+
+export function sendUtteranceToHologram(
+  target: Window,
+  result: { audio: ArrayBuffer; sampleRate?: number; mimeType: string; lipSyncGain?: number; lipSyncMaxWeight?: number; lipSyncPreferMorphTarget?: boolean; words?: Array<{ word: string; start: number; end: number }> }
+) {
+  const { audio, sampleRate, mimeType, lipSyncGain, lipSyncMaxWeight, lipSyncPreferMorphTarget, words } = result;
+  const utt: HologramUtterancePayload = {
+    mimeType,
+    sampleRate,
+    words,
+    lipSyncGain,
+    lipSyncMaxWeight,
+    lipSyncPreferMorphTarget,
+  };
+  target.postMessage({ origin: hologramMessageOrigin, kind: "utter-bytes", utt, bytes: audio }, "*", [audio]);
+}
+
+export function sendLiveAudioToHologram(target: Window, bytes: ArrayBuffer) {
+  target.postMessage({ origin: hologramMessageOrigin, kind: "live-audio", bytes }, "*", [bytes]);
 }
