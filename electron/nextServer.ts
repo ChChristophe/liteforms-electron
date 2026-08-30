@@ -22,7 +22,7 @@ export function resolveStandaloneDir({
   resourcesPath: string;
 }) {
   if (isPackaged) {
-    return join(resourcesPath, "app.asar.unpacked", ".next", "standalone");
+    return join(resourcesPath, "next", "standalone");
   }
 
   return join(appPath, ".next", "standalone");

@@ -1,5 +1,6 @@
 /** @type {import("electron-builder").Configuration} */
-const { existsSync } = module.require("node:fs");
+const { cpSync, existsSync } = module.require("node:fs");
+const { join } = module.require("node:path");
 
 const hasAzureTrustedSigningEnv = Boolean(
   process.env.AZURE_TENANT_ID && process.env.AZURE_CLIENT_ID && process.env.AZURE_CLIENT_SECRET
@@ -51,8 +52,23 @@ const platformNativeBinaryExcludes =
       ? windowsNativeBinaryExcludes
       : [];
 
+async function afterPack(context) {
+  const { appOutDir } = context;
+  const resourcesDir = join(appOutDir, "resources");
+  const from = join(process.cwd(), ".next", "standalone");
+  const to = join(resourcesDir, "next", "standalone");
+
+  if (!existsSync(from)) {
+    return;
+  }
+
+  console.log(`[electron] Copying Next standalone to ${to}`);
+  cpSync(from, to, { recursive: true });
+}
+
 module.exports = {
   appId: "org.liteforms.web",
+  afterPack,
   productName: "Liteforms",
   asar: true,
   compression: "maximum",
@@ -63,8 +79,6 @@ module.exports = {
   },
   files: [
     "dist-electron/**",
-    ".next/standalone/**",
-    ".next/static/**",
     "node_modules/@koromix/koffi-*/**",
     "node_modules/koffi/**",
     "public/**",
@@ -84,10 +98,12 @@ module.exports = {
     ...platformNativeBinaryExcludes
   ],
   asarUnpack: [
-    ".next/standalone/**",
     "node_modules/@koromix/koffi-*/**",
     "node_modules/koffi/**"
   ],
+  // The Next.js standalone output is copied in `afterPack` (see below) rather than
+  // via `extraResources`. electron-builder strips nested `node_modules` from
+  // `extraResources`, which would break the standalone's `require("next")`.
   extraResources: nativeBridgeResources,
   win: {
     ...windowsSigningConfig,
