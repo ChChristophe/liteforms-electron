@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AvatarScene } from "@/components/avatar/AvatarScene";
 import { ChatPanel, initialLocalModelLoadState } from "@/components/chat/ChatPanel";
 import type { CharacterConfig, LocalModelLoadState } from "@/components/chat/ChatPanel";
+import { useHologramBridge } from "@/components/hologram/useHologramBridge";
 import { BridgeRequiredBanner } from "@/components/looking-glass/BridgeRequiredBanner";
 import { OnboardingModal } from "@/components/onboarding/OnboardingModal";
 import { checkLookingGlassBridgeConnection } from "@/lib/avatar/bridgeConnection";
@@ -46,6 +47,7 @@ export default function HomePage() {
   const [bridgeConnected, setBridgeConnected] = useState<boolean | undefined>(undefined);
   const [isBridgeBannerDismissed, setIsBridgeBannerDismissed] = useState(false);
   const showBridgeBanner = bridgeConnected === false && !isBridgeBannerDismissed;
+  const { hologramActive, open: openHologram, close: closeHologram } = useHologramBridge();
 
   const pageLogReff = useRef(false);
   if (!pageLogReff.current) {
@@ -192,7 +194,25 @@ export default function HomePage() {
     <main className={showBridgeBanner ? "stage stage--with-top-banner" : "stage"}>
       {showBridgeBanner && <BridgeRequiredBanner onDismiss={() => setIsBridgeBannerDismissed(true)} />}
       <section className="avatar-viewport" aria-label="Avatar preview">
-        <AvatarScene modelUrl={modelUrl} />
+        {hologramActive ? (
+          <button
+            className="hologram-toggle"
+            type="button"
+            onClick={() => closeHologram()}
+          >
+            Normal
+          </button>
+        ) : (
+          <button
+            className="hologram-toggle"
+            type="button"
+            onClick={() => void openHologram(modelUrl)}
+            disabled={showBridgeBanner}
+          >
+            Voir en holo
+          </button>
+        )}
+        {!hologramActive && <AvatarScene modelUrl={modelUrl} hideVrButton />}
       </section>
       <ChatPanel
         key={chatPanelKey}

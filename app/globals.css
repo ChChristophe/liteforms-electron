@@ -1068,8 +1068,48 @@ button:disabled {
     min-height: 480px;
     position: static;
   }
+}
 
-  .avatar-viewport {
+.hologram-stage {
+  background: #000000;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;
+  width: 100vw;
+}
+
+.hologram-stage .avatar-scene {
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+  height: 100%;
+  max-height: none;
+  max-width: none;
+  width: 100%;
+}
+
+/* The LKG polyfill sometimes writes an inline pixel width/height onto the WebGL
+   canvas, which wins over the base `.avatar-scene canvas` rule and leaves a small
+   render in the corner of the /hologram window. Force it to fill the window via
+   !important so the hologram is fullscreen immediately (no need to double-click). */
+.hologram-stage .avatar-scene canvas {
+  height: 100% !important;
+  object-fit: cover;
+  width: 100% !important;
+}
+
+.hologram-toggle {
+  background: var(--accent, #22c55e);
+  border: 0;
+  border-radius: 8px;
+  color: #06230f;
+  cursor: pointer;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 10px 18px;
+}
+
+.avatar-viewport {
     padding: 24px;
   }
-}

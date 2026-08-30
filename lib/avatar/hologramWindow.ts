@@ -90,7 +90,7 @@ export function buildPopupFeatureString(screen?: ScreenLike): string {
   ].join(",");
 }
 
-export async function openHldHologramWindow(win: Window): Promise<Window | null> {
+export async function openHldHologramWindow(win: Window, routeUrl?: string): Promise<Window | null> {
   let targetScreen: ScreenLike | undefined;
 
   if ("getScreenDetails" in win) {
@@ -104,5 +104,91 @@ export async function openHldHologramWindow(win: Window): Promise<Window | null>
     }
   }
 
-  return win.open("", "liteforms-hld-hologram", buildPopupFeatureString(targetScreen));
+  const url = routeUrl ?? "";
+  return win.open(url, "liteforms-hld-hologram", buildPopupFeatureString(targetScreen));
+}
+
+type LookingGlassPopupWindowLike = {
+  document: {
+    title: string;
+    body: {
+      style: { background: string; transform?: string };
+      appendChild(node: unknown): unknown;
+    };
+    addEventListener?: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => void;
+    removeEventListener?: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => void;
+  };
+  close(): void;
+  closed: boolean;
+  onbeforeunload?: (() => void) | null;
+};
+
+function isLookingGlassPolyfillPopup(url: unknown, target?: string, features?: string): boolean {
+  if (url !== "" && url !== undefined) return false;
+
+  // Le polyfill LKG ouvre SA popup (url vide) pour héberger le canvas quilt.
+  // Ne jamais intercepter l'ouverture de la vraie fenêtre /hologram.
+  if (target === "liteforms-hld-hologram") return false;
+
+  return target === "new"
+    || Boolean(features?.startsWith("width="))
+    || Boolean(features?.includes("fullscreenEnabled"));
+}
+
+export function installLookingGlassPopupShim(container: HTMLElement): () => void {
+  const originalOpen = window.open;
+  if (!originalOpen) return () => {};
+
+  const fakeBody: LookingGlassPopupWindowLike["document"]["body"] = {
+    style: { background: "black", transform: "1.0" },
+    appendChild(node: unknown) {
+      if (node instanceof HTMLCanvasElement) {
+        try {
+          if (typeof console !== "undefined") {
+            console.log("[liteforms-diag] polyfill-shim intercepted canvas → stage");
+          }
+        } catch {
+          /* ignore */
+        }
+        node.style.position = "fixed";
+        node.style.left = "0";
+        node.style.top = "0";
+        node.style.width = "100%";
+        node.style.height = "100%";
+        node.style.objectFit = "cover";
+        node.style.zIndex = "10";
+        node.style.backgroundColor = "#000";
+        container.appendChild(node);
+        return node;
+      }
+      if (node instanceof Node) {
+        container.appendChild(node);
+        return node;
+      }
+      return node;
+    },
+  };
+
+  const fakeWindow: LookingGlassPopupWindowLike = {
+    document: {
+      title: "Liteforms Looking Glass Display",
+      body: fakeBody,
+      addEventListener() {},
+      removeEventListener() {},
+    },
+    close() {},
+    closed: false,
+    onbeforeunload: null,
+  };
+
+  window.open = ((url?: string | URL, target?: string, features?: string) => {
+    if (isLookingGlassPolyfillPopup(url, target, features)) {
+      return fakeWindow as unknown as Window;
+    }
+    return originalOpen.call(window, url, target, features);
+  }) as typeof window.open;
+
+  return () => {
+    window.open = originalOpen;
+  };
 }

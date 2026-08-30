@@ -1,4 +1,5 @@
 import type { BrowserWindowConstructorOptions, HandlerDetails, WindowOpenHandlerResponse } from "electron";
+import { join } from "node:path";
 
 export const liteformsHldHologramWindowName = "liteforms-hld-hologram";
 
@@ -12,6 +13,19 @@ export const hologramWindowBrowserOptions: BrowserWindowConstructorOptions = {
   roundedCorners: false,
   title: "Liteforms Hologram",
   useContentSize: true,
+  webPreferences: {
+    // The /hologram window is opened via window.open and must expose the same
+    // preload (liteformsElectron.lookingGlassBridge + diagnostic IPC) as the main
+    // window so its renderer can calibrate the native Looking Glass bridge and
+    // write diagnostic logs. Child windows do not always inherit the preload, so
+    // set it explicitly with matching security settings.
+    backgroundThrottling: false,
+    contextIsolation: true,
+    nodeIntegration: false,
+    preload: join(__dirname, "preload.js"),
+    sandbox: true,
+    webSecurity: true,
+  },
 };
 
 export type WindowOpenDecision = {
@@ -71,10 +85,9 @@ export function resolveWindowOpenRequest(
 }
 
 export function isHologramWindowOpenRequest(details: WindowOpenRequestDetails) {
+  if (details.frameName === liteformsHldHologramWindowName) return true;
   if (!isBlankWindowUrl(details.url)) return false;
-
-  return details.frameName === liteformsHldHologramWindowName
-    || hasWindowFeature(details.features, "fullscreenEnabled", "true");
+  return hasWindowFeature(details.features, "fullscreenEnabled", "true");
 }
 
 function isBlankWindowUrl(targetUrl: string) {

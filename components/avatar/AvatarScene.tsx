@@ -55,9 +55,12 @@ import {
   detectSingleScreen,
   shouldEnterHldFallback,
   openHldHologramWindow,
+  installLookingGlassPopupShim,
   type NativeLookingGlassDisplayConnection,
   shouldHideHologramButtonForScreen,
 } from "@/lib/avatar/hologramWindow";
+import { isHologramWindow } from "@/lib/avatar/hologramMessageProtocol";
+import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import {
   applyNativeLookingGlassBridgeCalibration,
   getNativeLookingGlassBridgeState,
@@ -75,6 +78,7 @@ import {
 
 type AvatarSceneProps = {
   modelUrl?: string;
+  hideVrButton?: boolean;
 };
 
 const DEFAULT_MODEL_URL = "/models/lobsterEdit.vrm";
@@ -98,6 +102,12 @@ const LOOKING_GLASS_FOCAL_TARGET = new Vector3(0.003, 0.877, 0.234);
 // only be constructed once per page lifetime.
 let lkgInitialized = false;
 const hldShadowCompositor = new HldShadowCompositor();
+
+// When true, the dedicated /hologram window enters the Looking Glass session
+// automatically after the avatar model has loaded. The LKG polyfill replaces
+// navigator.xr and does not require a user gesture to start a session, so the
+// synthetic VRButton click below reliably starts the immersive render.
+const AUTO_ENTER_HOLOGRAM_SESSION = true;
 
 type SceneTransformReference = {
   footprint: ModelFootprint;
@@ -245,7 +255,7 @@ function ensureLobsterSceneReference(): Promise<SceneTransformReference> {
   return _lobsterSceneReferencePromise;
 }
 
-export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) {
+export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false }: AvatarSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const vrmRef = useRef<VRM | undefined>(undefined);
   const idleAnimatorRef = useRef<VrmIdleAnimator | undefined>(undefined);
@@ -281,18 +291,43 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
     let nativeBridgeCalibrationRetryId: number | undefined;
     let lkgConfigChangeCleanup: (() => void) | undefined;
     let xrSessionEndCleanup: (() => void) | undefined;
+    let autoEnterIntervalId: number | undefined;
+    let modelLoaded = false;
     let exitHldFallback: (() => void) | undefined;
     let isHldFallbackActive = false;
     let isLkgSessionActive = false;
     let nativeLookingGlassDisplayConnection: NativeLookingGlassDisplayConnection = "unavailable";
 
+    try {
+      logDiagnostic(
+        `AvatarScene mount | hologram=${isHologramWindow()} name=${window.name} ` +
+        `pathname=${window.location.pathname} hasElectronBridge=${Boolean(
+          (window as { liteformsElectron?: unknown }).liteformsElectron
+        )} inner=${window.innerWidth}x${window.innerHeight}`
+      );
+    } catch { /* ignore */ }
+
     const editableKeyboardShieldCleanup = installEditableKeyboardEventShield(window);
+
+    // The Looking Glass polyfill opens a blank popup via window.open to host the
+    // quilt canvas. In the dedicated /hologram window (already fullscreen on the
+    // Looking Glass), intercept that popup and host the canvas inline instead, so
+    // no extra window or second click is required.
+    let lookingGlassPopupShimCleanup: (() => void) | undefined;
+    if (isHologramWindow()) {
+      lookingGlassPopupShimCleanup = installLookingGlassPopupShim(container);
+    }
 
     void import("@lookingglass/webxr").then(({ LookingGlassWebXRPolyfill, LookingGlassConfig }) => {
       if (disposed) return;
 
       // 1. Init the polyfill once — overrides navigator.xr with the LKG device.
-      if (!lkgInitialized) {
+      //    Only the dedicated /hologram window may present an immersive session.
+      //    The main window has no visible VRButton and must never start a session:
+      //    doing so makes the polyfill spawn its own blank "Looking Glass Window"
+      //    popup on the primary monitor (visible as a small quilt strip / needing a
+      //    second click) instead of rendering inside the real /hologram window.
+      if (isHologramWindow() && !lkgInitialized) {
         new LookingGlassWebXRPolyfill();
         lkgInitialized = true;
       }
@@ -424,7 +459,13 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
       const resize = () => {
         let clientWidth = container.clientWidth;
         let clientHeight = container.clientHeight;
-        if (!isLkgSessionActive) {
+        if (isHologramWindow()) {
+          // In the dedicated hologram window, render at the full window size so
+          // the avatar fills the display. Do not apply the inline preview
+          // shrink (which is what puts the small render in the top-left corner).
+          clientWidth = window.innerWidth;
+          clientHeight = window.innerHeight;
+        } else if (!isLkgSessionActive) {
           const inlineSize = computeLkgInlineViewSize(clientWidth, clientHeight);
           clientWidth = inlineSize.width;
           clientHeight = inlineSize.height;
@@ -540,6 +581,8 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
             }
           }
           setStatus("");
+          modelLoaded = true;
+          resize();
 
           void loadEnvironmentGlb(ALCOVE_URL, loader, scene, {
             scale: environmentReference.environmentScale,
@@ -695,6 +738,11 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
       //    isSessionSupported query finds the LKG device.
       vrButton = VRButton.createButton(renderer);
       (container.parentElement ?? document.body).appendChild(vrButton);
+      if (hideVrButton) {
+        vrButton.hidden = true;
+        vrButton.setAttribute("aria-hidden", "true");
+        vrButton.style.setProperty("display", "none", "important");
+      }
       if (shouldHideHologramButtonForScreen(window.screen)) {
         hideVrButtonForSingleScreen();
       } else {
@@ -706,6 +754,17 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
       vrButton.addEventListener(
         "click",
         (event) => {
+          try {
+            const c = container.getBoundingClientRect();
+            const cv = renderer!.domElement;
+            logDiagnostic(
+              `VRButton click | isHologramWindow=${isHologramWindow()} name=${window.name} ` +
+              `pathname=${window.location.pathname} container=${Math.round(c.width)}x${Math.round(c.height)} ` +
+              `canvas=${cv.width}x${cv.height} fallback=${isHldFallbackActive} ` +
+              `lkgSessionActive=${isLkgSessionActive} dpr=${window.devicePixelRatio} ` +
+              `inner=${window.innerWidth}x${window.innerHeight}`
+            );
+          } catch { /* ignore */ }
           if (isHldFallbackActive) {
             event.preventDefault();
             event.stopImmediatePropagation();
@@ -719,6 +778,46 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
         },
         { capture: true }
       );
+
+      // In the dedicated hologram window, enter the Looking Glass session
+      // automatically once the device and avatar model are ready, instead of
+      // requiring a second "Hologram-iphy" click inside that window.
+      if (isHologramWindow() && AUTO_ENTER_HOLOGRAM_SESSION) {
+        const autoEnterStartedAt = Date.now();
+        // The polyfill renders the quilt from LookingGlassConfig.calibration.
+        // Until syncCalibration() receives the device list (async, over the
+        // Looking Glass service), that config holds the default 3840×2160
+        // profile. Requesting the session before the real device calibration
+        // lands produces a distorted first quilt (the observed white left strip:
+        // the first session draws with the wrong screenW/screenH, inverting the
+        // correct-only-on-second-click behaviour). So wait for a non-default
+        // calibration before clicking, with a hard cap so entry can never hang.
+        const deviceCalibrationReady = () => {
+          try {
+            const sw = LookingGlassConfig.calibration.screenW.value;
+            const sh = LookingGlassConfig.calibration.screenH.value;
+            return sw !== 3840 || sh !== 2160;
+          } catch {
+            return false;
+          }
+        };
+        autoEnterIntervalId = window.setInterval(() => {
+          if (disposed || isLkgSessionActive) {
+            if (autoEnterIntervalId !== undefined) window.clearInterval(autoEnterIntervalId);
+            return;
+          }
+          if (!modelLoaded) return;
+          const btn = vrButton;
+          if (!btn) return;
+          if ((btn as HTMLButtonElement).disabled) return;
+          if (!deviceCalibrationReady() && Date.now() - autoEnterStartedAt < 6000) return;
+          if (autoEnterIntervalId !== undefined) window.clearInterval(autoEnterIntervalId);
+          try {
+            logDiagnostic("auto-enter click | waiting for device calibration");
+          } catch { /* ignore */ }
+          btn.click();
+        }, 300);
+      }
 
       // Override the VRButton text. The LKG polyfill asynchronously rewrites
       // innerHTML to "ENTER/EXIT LOOKING GLASS"; watch for those mutations and
@@ -747,15 +846,25 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
 
         if (current === "EXIT LOOKING GLASS" || current === "EXIT VR") {
           isLkgSessionActive = true;
-          const sw = LookingGlassConfig.calibration.screenW.value;
-          const sh = LookingGlassConfig.calibration.screenH.value;
-          container.style.aspectRatio = `${sw} / ${sh}`;
-          container.style.maxHeight = `${Math.floor(window.innerHeight * 0.85)}px`;
+          // In the dedicated hologram window, keep the render full-screen: do
+          // not constrain the container to the device quilt aspect-ratio or a
+          // 85% max height (those are for the inline preview in the UI window).
+          if (!isHologramWindow()) {
+            const sw = LookingGlassConfig.calibration.screenW.value;
+            const sh = LookingGlassConfig.calibration.screenH.value;
+            container.style.aspectRatio = `${sw} / ${sh}`;
+            container.style.maxHeight = `${Math.floor(window.innerHeight * 0.85)}px`;
+          }
           resize();
         } else if (current === "ENTER LOOKING GLASS" || current === "ENTER VR") {
           isLkgSessionActive = false;
-          container.style.aspectRatio = "";
-          container.style.maxHeight = "";
+          if (isHologramWindow()) {
+            container.style.aspectRatio = "auto";
+            container.style.maxHeight = "";
+          } else {
+            container.style.aspectRatio = "";
+            container.style.maxHeight = "";
+          }
           restorePreviewCamera();
           resize();
         }
@@ -840,14 +949,28 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
       //    each frame so the inline view is never distorted.
       const clock = new Clock();
       renderer.setAnimationLoop(() => {
-        if (isLkgSessionActive) {
+        if (isHologramWindow()) {
+          // The /hologram window is the LKG display (already fullscreen via
+          // Electron). The polyfill forces the canvas buffer AND sometimes an
+          // inline pixel width/height style onto the DOM canvas, which overrides
+          // the CSS (width/height:100%) and shows the render small in a corner.
+          // Force the canvas to fill its window every frame so the avatar fills
+          // the Looking Glass screen immediately — no double-click / requestFullscreen
+          // and no WebXR activation needed.
+          const canvas = renderer!.domElement;
+          if (canvas.style.objectFit !== "cover") canvas.style.objectFit = "cover";
+          if (canvas.style.width !== "100%") canvas.style.width = "100%";
+          if (canvas.style.height !== "100%") canvas.style.height = "100%";
+        } else if (isLkgSessionActive) {
           const canvas = renderer!.domElement;
           const aspect = `${canvas.width} / ${canvas.height}`;
           if (container.style.aspectRatio !== aspect) {
             container.style.aspectRatio = aspect;
           }
         }
-        const delta = clock.getDelta();
+        // Clamp delta so a long stall (e.g. display sleep pausing rAF) doesn't
+        // cause an animation jump when frames resume.
+        const delta = Math.min(clock.getDelta(), 0.1);
         idleAnimatorRef.current?.update(delta);
         runtimeAnimator?.update(delta);
         currentVrm?.update(delta);
@@ -882,7 +1005,11 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
       if (nativeBridgeCalibrationRetryId !== undefined) {
         window.clearInterval(nativeBridgeCalibrationRetryId);
       }
+      if (autoEnterIntervalId !== undefined) {
+        window.clearInterval(autoEnterIntervalId);
+      }
       editableKeyboardShieldCleanup?.();
+      lookingGlassPopupShimCleanup?.();
       lkgConfigChangeCleanup?.();
       xrSessionEndCleanup?.();
       exitHldFallback?.();
@@ -898,7 +1025,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL }: AvatarSceneProps) 
       vrButton?.remove();
       vrmRef.current = undefined;
     };
-  }, [modelUrl]);
+  }, [modelUrl, hideVrButton]);
 
   return (
     <div className="avatar-scene" ref={containerRef}>
