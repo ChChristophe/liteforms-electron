@@ -82,6 +82,7 @@ module.exports = {
     "node_modules/@koromix/koffi-*/**",
     "node_modules/koffi/**",
     "public/**",
+    "resources/**",
     "native/bridge/*.md",
     "native/bridge/*.txt",
     "package.json",
@@ -107,6 +108,7 @@ module.exports = {
   extraResources: nativeBridgeResources,
   win: {
     ...windowsSigningConfig,
+    icon: "resources/icon-256.png",
     signExts: [".dll", ".node"],
     target: ["nsis"]
   },
