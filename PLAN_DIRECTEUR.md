@@ -1,0 +1,335 @@
+# PLAN DIRECTEUR — Liteforms, l'appliance à hologramme (Mini-PC + Looking Glass)
+
+> Document de travail unique, issu de l'échange complet. Il sert de **base de référence** pour toute la suite du projet.
+> Dernière mise à jour : 30/08/2026.
+
+---
+
+## 0. Vision produit
+
+Liteforms devient une **appliance** :
+
+- un **Mini-PC Linux** branché → l'app Electron **démarre toute seule** ;
+- un **Looking Glass** affiche l'avatar holographique (Clawdia) avec **lip-sync** piloté par la voix (TTS + voix temps réel) ;
+- **aucun écran/UI nécessaire au quotidien** : l'app **mobile** est la source de vérité pour toute la configuration ;
+- le téléphone provisionne le Mini-PC (Wi-Fi maison), le couple (devise_id/secret) puis pousse les réglages **en direct** (sans redémarrer) : modèles LLM/TTS/ASR, wake word, couleur de l'alcove, émotion, choix du VRM, etc.
+
+Cette vision implique **3 chantiers imbriqués** :
+1. **le portage web → Electron** du travail fait dans le repo web (31 commits `Jarvis:`) ;
+2. **l'app mobile** (UI de configuration + provisioning) — projet séparé ;
+3. **le kiosque Linux** (autostart, Wi-Fi, appairage, mise à jour auto).
+
+Ce document couvre l'ensemble, avec états, difficultés, risques, chiffres et phasage.
+
+---
+
+## 1. Contexte technique (repos, environnement, validation)
+
+### 1.1 Repos
+
+| Repo | Rôle | Origine | État actuel |
+|---|---|---|---|
+| `C:\dev\liteforms-web` | Repo « web » : **31 commits `Jarvis:`** à porter | origine GitHub (ChChristophe) | HEAD = `9fc237f` (calcul realtime) |
+| `C:\dev\liteforms-electron` | **Workspace de dev** (travail non commité : holo, systray, port alcove…) | origin `Looking-Glass/liteforms-web` | working tree divergent, **rien commité** |
+| `C:\dev\electron\liteforms-electron` | **Fork privé / base de travail** (5 commits `Jarvis:` créés localement, **jamais poussés**) | `git@github.com:ChChristophe/liteforms-electron.git` | HEAD `52dcd05` + 5 commits locaux ; working tree propre |
+
+**Topologie git** : ancêtre commun `7fa7670`. Puis :
+- côté Electron : `5fdad0c` (fix calibration bridge) → `4dbecb1` (build ouvre une fenêtre) → `52dcd05` (fullscreen + suppression d'UI) ;
+- côté web : les **31 commits `Jarvis:`** (dont l'ancêtre des deux côtés a divergé).
+
+### 1.2 Environnement de travail
+
+- OS : **Windows 10/11 (build 26200)**, shell PowerShell 5.1.
+- Node `npm`, **electron-builder 26.8.1**, **Electron 41.7.1**, Next.js **standalone**.
+- Scripts utiles (dans la paire de repos) :
+  - `npm run build:electron` = `build:electron:main` (`tsc -p electron/tsconfig.json`) + `build:electron:next` (`next build` en mode `LITEFORMS_ELECTRON_BUILD=1` + `scripts/prepare-electron-next.mjs`) ;
+  - `npm run dist:electron` = build + `electron-builder --config electron-builder.config.cjs` ;
+  - `npm test` = `vitest run` ; `npm run lint` = `eslint .` ;
+  - typecheck complet = `npx tsc --noEmit`.
+
+### 1.3 Ce qui est déjà validé
+
+- **Fenêtre `/hologram`** dédiée au Looking Glass : lip-sync stable via RMS, TTS + voix temps réel relayés depuis la fenêtre principale par `postMessage`, minimisation → **systray avec logo**.
+- **Build Windows fonctionnel** : `release\win-unpacked\Liteforms.exe` + installateur NSIS ; ressources vérifiées : `resources\next\standalone\server.js` (fix standalone), `resources\bridge\win32-x64` (bridge natif), icônes dans l'asar.
+- **Tests** : 22/22 verts pour `environmentLoader` + `environmentConfig` ; eslint propre sur les fichiers portés ; `tsc --noEmit` sans erreur sur les fichiers du port (erreurs **pré-existantes** non liées dans `electron/electronBuild.test.ts`, `lib/avatar/nativeLookingGlassBridge.test.ts`, `lib/avatar/vrmMorphTargetRepair.test.ts`).
+- **11 warnings eslint pré-existants** dans `ChatPanel.tsx` (lignes non touchées).
+- **Persistance** : `localStorage` (`sessionConfig.ts`, `characterConfig.ts`, clé onboarding, `environmentConfig.ts`) + **IndexedDB** (DB `liteforms` : `indexedDbCredentialRepository.ts`, `indexedDbVrmRepository.ts`). Dossier `%APPDATA%\liteforms-web` (userData). Par origine. `/hologram` n'écrit rien.
+
+### 1.4 Les 5 commits `Jarvis:` (base du miroir)
+
+1. `ba4f8e7` — **fix packaged Next server location** : standalone copié dans `resources/next` (`afterPack` `cpSync .next/standalone`), `resolveStandaloneDir`, excludes tsconfig.
+2. `8e395fe` — **add app in systray with logo** : tray/park hors-écran/`setSkipTaskbar`, `resources/` (icon.ico, icon-256.png, icon-32.png), `scripts/generate-icons.mjs`, `win.icon`.
+3. `f7a51ea` — **add diagnostics log and hologram DOM/probe instrumentation** : `diagnosticLog.ts`, preload, `writeDiagnostic`/`wireWebContentsDiagnostics`, pageLogRef.
+4. `f219bf8` — **add hologram window on the Looking Glass display** : `windowOpenPolicy`, `hologramWindow.ts`, code intermédiaire du protocol/bridge/page holo.
+5. `bdde1f8` — **relay TTS and realtime voice into the hologram window for lip-sync** : ChatPanel final + protocol/bridge/page holo finaux.
+
+**Règle de travail** : commits `Jarvis: <sujet anglais>`, créés localement dans le miroir, **aucun push sans accord**.
+
+### 1.5 Dernier port effectué (non encore commité nulle part)
+
+**`a5c88bb` « Change Alcove color in UI » porté dans le workspace** `C:\dev\liteforms-electron`, adapté aux divergences (holo/`hideVrButton`) :
+
+- nouveaux : `lib/storage/environmentConfig.ts`, `environmentConfig.test.ts` ;
+- modifiés : `environmentLoader.ts` (tint + snapshot matières/WeakMap), `environmentLoader.test.ts` (+4 tests), `AvatarScene.tsx` (prop `environmentTint`, refs, apply au chargement + cleanup + `useEffect`), `ChatPanel.tsx` (props/état/handlers + rangée « Alcove color » sous Load VRM, panneau Advanced), `app/page.tsx` (état + `loadEnvironmentConfig` + handler persisté + câblage props), `app/globals.css` (`.alcove-color-label`, `.advanced-hint`) ;
+- **`/hologram`** : la fenêtre holo lit `loadEnvironmentConfig()` au montage + écoute l'événement **`storage`** → le tint se met à jour **en direct** depuis la fenêtre principale (même origine `localStorage`, aucun IPC nécessaire) ; Reset → matières d'origine.
+
+---
+
+## 2. Audit du portage web → Electron (31 commits `Jarvis:`)
+
+### 2.1 Méthode
+
+Fichiers des commits comparés entre l'arbre Electron actuel, la base commune `7fa7670` et le HEAD web. Résultat : **tous les modules partagés ont divergé** (l'app Electron a une base plus récente : LKG + holo + systray), seul `environmentLoader.ts` est identique au HEAD web (porté). En conséquence **chaque port demande une adaptation**, mais rien ne dépend d'API OS/bridge natif → **faisabilité quasi maximale partout**.
+
+### 2.2 Tableau d'audit complet
+
+| # | Commit | Contenu | Diff | Faisa | Notes |
+|---|---|---|---|---|---|
+| 1 | `4952eed` | Init + docs `.md` | 1 | N/A | documents seulement |
+| 2 | `985278b` | Update provider + erreurs système | 2 | 10 | probablement déjà couvert par la base Electron (onboarding plus riche) |
+| 3 | `b124d76` | Lipsync OpenAI TTS | 3 | 9 | ≈ chaîne lip-sync LKG déjà en place (`vrmRuntimeAnimator` divergé) |
+| 4 | `aba7316` | Modale vitesse d'élocution OpenAI | 2 | 10 | `OnboardingModal.tsx` à adapter |
+| 5 | `95b2784` | Meilleur idle loop + foot place | 3 | 9 | équivalent déjà présent : `VrmIdleAnimator` (`vrmAnimationLoader.ts`) + `vrmFootPlantLock.ts` |
+| 6 | `ff26033` | Depth VRM dans l'alcove | 2 | 10 | à retuner pour le viewport `/hologram` |
+| 7 | `050c195` | Recenter hips animation | 2 | 10 | `vrmAnimationLoader.ts` |
+| 8 | `a5c88bb` | **Alcove color** | ✅ | **fait** (4 effectif) | porté en workspace + `/hologram` (voir 1.5) |
+| 9 | `bf978b2` | Emotion en face | 4 | 9 | nouveau `moodConfig` (storage) + `vrmExpressionController` + UI 2 fenêtres |
+| 10 | `922809e` | Fix bugs core | 3 | 8 | re-corriger manuellement un `ChatPanel` fortement divergé |
+| 11 | `5086b76` | **Bundle OpenWakeWord** | 7 | 8 | gros kit (moteur ort + modèles `.onnx` + worklet + featureFlags) ; `onnxruntime-web@1.21` **déjà en deps** ; threading wasm → voir §6.4 |
+| 12 | `a72535d` | UI wake word + fixes activation | 3 | 9 | dépend du bundle #11 |
+| 13 | `bc9d76e` | Sélection modèle + persistance | 3 | 9 | `wakeWordConfig`/store |
+| 14 | `351b034` | Câblage UI wake word | 3 | 9 | `ChatPanel` divergé |
+| 15 | `f0e4ee9` | POC panel étendu | 2 | 9 | composant+tests |
+| 16 | `2033482` | Cue wake word (blink alcove + greeting) | 4 | 9 | à adapter à l'animator Electron (`idleChoreographer` ≠ absence Electron) |
+| 17 | `bf81276` | Cue configurable | 3 | 9 | storage `wakeWordConfig` |
+| 18 | `3948403` | Doc études | 1 | N/A | documents |
+| 19 | `949dee2` | Sessions OpenClaw réutilisées (conversation ids) | 4 | 9 | `adapters.ts`/`types.ts` divergés |
+| 20 | `a3c1f90` | Conversation id stable → LLM | 3 | 9 | `ChatPanel` |
+| 21 | `a6dd16a` | Max 2 TTS concurrents | 3 | 9 | throttling dans le `ChatPanel` divergé |
+| 22 | `e1e0c13` | Strip markdown (display + parlé) | 2 | 10 | logique pure (`lib/llm/output.ts`, `lib/speech/tts.ts`) |
+| 23 | `21ac88a` | Doc suite | 1 | N/A | documents |
+| 24 | `28cc967` | **Function calling + OpenClaw + audio utils** | 6 | 9 | routes Next **tournent dans le standalone** ✓ ; `audioUtils` ≈ `audioPlayback` existant ; tools à réinjecter dans `googleLive`/`openAiRealtime` + `ChatPanel`/holo ; `openclawGatewayToken` |
+| 25 | `de2aed2` | TimerManager | 2 | 10 | module 100 % client |
+| 26 | `f0884a7` | Tools timer realtime | 3 | 9 | fournisseurs realtime |
+| 27 | `a9df03e` | Timers dans ChatPanel (chime + notif) | 4 | 9 | UI + audio chime |
+| 28 | `e1037ce` | get_current_date | 3 | 9 | après l'infra #24 |
+| 29 | `9fc237f` | calculate + parser sûr | 3 | 9 | parser pur + route |
+
+### 2.3 Verdict du portage
+
+- **100 % faisable** (faisabilité ≥ 8/10 partout).
+- Les **2 vrais chantiers** : `5086b76` (wake word complet) et `28cc967` (function calling realtime).
+- Le reste : adaptations mineures de fichiers divergés.
+
+---
+
+## 3. Décisions produit (établies avec l'utilisateur)
+
+### 3.1 Configuration déléguée au smartphone
+
+1. **Source de vérité = le téléphone.** L'UI desktop n'est pas éditée (POC).
+2. **Live sans reboot** : chaque changement est appliqué immédiatement par l'app (voir §4).
+3. **VRM** : le fichier `.vrm` reste **sur la machine** (déjà en IndexedDB) ; le téléphone envoie seulement le **choix du modèle** (nom/référence), pas un upload.
+4. **Sécurité minimale au POC** : un token d'appairage suffit ; durcissement plus tard (voir §6.3/§8, phase 4).
+
+### 3.2 Parcours utilisateur cible (appliance)
+
+```
+1. Brancher le Mini-PC → ON        (Electron démarre en auto-start)
+2. Electron crée le hotspot JARVIS-XXXX   (mode provisioning, 1er boot)
+3. L'app mobile détecte JARVIS-XXXX → [Connecter]
+4. L'app demande le Wi-Fi maison (SSID + mot de passe) → POST à Electron
+5. Electron configure NetworkManager (Linux) → le Mini-PC rejoint le Wi-Fi
+   maison, abandonne son hotspot
+6. Le téléphone rejoint le même Wi-Fi → communication LAN normale
++ Sécurité d'association pendant le provisioning :
+   mini PC génère DEVICE_ID + PAIRING_SECRET ; Electron garde la liste
+   (Device, Paired-Phone, Token) ; toute écriture config exige le token.
+```
+
+> **Décision de phasage** : au POC, le provisioning manuel (IP + code à 6 chiffres affiché à l'écran) remplace les étapes 2-5. Le hotspot n'arrive qu'en phase 3.
+
+---
+
+## 4. Architecture « config téléphone → Electron » (POC)
+
+### 4.1 Réalité d'architecture à connaître
+
+- Toute la config vit **côté renderer** (`localStorage` + IndexedDB). Les **routes Next tournent dans le processus serveur** (Node) qui n'a pas accès au `localStorage` du renderer.
+- Il faut donc un chemin **serveur → main → renderer** :
+
+```
+Téléphone ─POST /api/device-config (token)─▶ serveur Next local
+       │ écrit device-config.json dans userData
+       ▼
+Main Electron ─fs.watch / polling─▶ webContents.send("device-config-change", json)
+       ▼ (via le preload déjà en place)
+Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
+```
+
+- Alternative simple au POC : le renderer **polle** `GET /api/device-config` toutes les 2 s (moins de code que `fs.watch` main→IPC). Passing à un push (SSE/WebSocket ou IPC) ensuite.
+
+### 4.2 L'application (apply live) réutilise l'existant
+
+| Config poussée | Application côté Electron | Réalité technique |
+|---|---|---|
+| `alcoveColor` | `setAlcoveColor` | changement visuel immédiat (état déjà en place) |
+| `character` | `setCharacter` + `saveCharacterConfig` | identité/mot d'accueil à l'écran |
+| LLM/TTS/ASR (modèles…) | maj des `initialConfig` + **bump `chatPanelKey`** | remontage du ChatPanel = **le flow d'onboarding existant** (« React 18 batches these updates ») |
+| `vrm` (choix modèle) | lookup **IndexedDB** par `fileName` → `setModelUrl(blobUrl)` | effet `[modelUrl]` déjà géré |
+| (futur) wake word | `wakeWordSettingsStore` partagée | idem |
+
+- **Micro-extension** nécessaire : méthode `list()`/`loadByName()` dans `indexedDbVrmRepository` (aujourd'hui `load()` seul).
+- **Credentials** : le téléphone les envoie pour configurer ; on ne les renvoie jamais sur le réseau (voir sécurité §6.3).
+
+### 4.3 Récepteur côté app
+
+- L'écoute réseau : le serveur Next écoute sur `127.0.0.1` aujourd'hui → à binder sur la carte LAN (`0.0.0.0`/IP locale). Conséquence Windows : **pop-up pare-feu à accepter** au 1er run (réseau privé). Sur Linux : mêmes questions.
+
+---
+
+## 5. Feuille de route phasée (critères de sortie, difficulté, risques)
+
+### Phase 0 — Portage web → Electron
+**Objectif** : récupérer la valeur des 31 commits `Jarvis:` du web.
+**Ordre suggéré** (du plus sûr au plus structurant) :
+1. Logique pure / modules autonomes : 22 (strip markdown), 25 (TimerManager), 26, 28, 29 (function calling + parser), 6, 7 (retunes) ;
+2. ChatPanel (20, 21, 3, 10, 27) ;
+3. Providers/adapters (2, 19, 24 core) ;
+4. Émotion (9) ;
+5. **Wake word** (11→17) en dernier (gros bloc, plus d'incertitude).
+**Vérif** : après chaque groupe — `npm test`, `npm run lint`, `npx tsc --noEmit`, build.
+**Difficulté cumulée** : ~2/10 (logique pure) à 7/10 (wake word). **Faisabilité : 9/10.**
+
+### Phase 1 — LE PARI : l'holo sur Linux (à tester en premier)
+**Objectif** : preuve que le Looking Glass rend correctement depuis un Mini-PC **Linux**, avant tout investissement produit.
+**Livrables** :
+- build `AppImage`/`.deb` (x86_64) — **le build doit se faire sur Linux** ;
+- driver d'affichage LKG sur Linux : **fallback HLD (compositor logiciel)** OU **bridge Python**.
+- le bridge Python est faisable : `electron/nativeBridge.ts` spawn déjà un sous-processus (`nativeBridgeProbe.js`) renvoyant la calibration en JSON sur fd 3 → même pattern pour un probe Python.
+**Critère de sortie** : qualité d'image/sync acceptable sur l'appareil.
+**Difficulté : 5–6/10. Faisabilité : 9/10.**
+**⚠ Risque n°1 du projet** : si l'image LKG est mauvaise sous Linux, tout le reste (provisioning, mobile, appliance) perd sa valeur.
+
+### Phase 2 — POC config téléphone → live
+**Objectif** : config maîtrisée depuis le téléphone, appliquée en direct, **sans hotspot**.
+**Livrables** :
+- route `POST /api/device-config` + **token minimal** (§4/§6.3) ;
+- `GET /api/device-config` (statut/lecture, bonus utile) ;
+- watcher ou polling → événement IPC → `applyDeviceConfig()` ;
+- app mobile (projet séparé) : UI config + saisie `IP` + `code d'appairage`.
+**Critère de sortie** : pousser `alcoveColor`, `character`, un provider LLM/TTS, un VRM depuis le téléphone → appliqués **à chaud**.
+**Difficulté côté Electron : 3–4/10. Faisabilité : 9–10/10.**
+
+### Phase 3 — Le confort appliance
+**Objectif** : l'expérience « on le branche, ça marche ».
+**Livrables** :
+- **autostart** Linux (`.desktop` → `~/.config/autostart`), mode provisioning sur 1er boot (machine à états `provisioned ?`) ;
+- **provisioning hotspot** : `nmcli device wifi hotspot` / `nmcli con up` → **helper privilégié (polkit ou service systemd + dialogue socket)** ;
+- **mDNS** (`jarvis.local`, avahi/bonjour-service) ;
+- **pairing complet** : génération `DEVICE_ID` + `PAIRING_SECRET`, stockage devices/phones/token dans `userData`, middleware de token ;
+- **auto-update** (AppImage/.deb, sign).
+**Difficulté : 5–6/10 (concentrée sur le helper privilégié + machine à états). Faisabilité : 9/10.**
+
+### Phase 4 — Sécurité durcie
+**Objectif** : fermer les failles du POC.
+**Livrables** : TLS local (certificat auto-signé éphémère) ; **rotation de token** ; gestion propriétaire/devices (le téléphone qui provisionne est l'owner ; les autres doivent se re-pairer) ; **jamais de retour des credentials** sur le réseau ; rate-limiting ; nettoyage du secret après appairage.
+**Difficulté : 3/10. Faisabilité : 9/10.**
+
+---
+
+## 6. Points de difficulté & risques (détaillés)
+
+### 6.1 (Critique) Driver Looking Glass sous Linux — voir Phase 1
+- Bridge natif actuel : **Windows (`win32-x64`) et macOS uniquement**.
+- Options Linux : fallback **HLD** (compositor logiciel, déjà dans le code) ou **bridge Python** (pattern subprocess à réutiliser).
+- **À valider AVANT tout le reste** (le produit = le LKG).
+
+### 6.2 Privilèges Wi-Fi / NetworkManager
+- `nmcli` (hotspot, rejoindre un réseau) = **root**.
+- Archive propre : règle **polkit** mini PC ou **service systemd** launcher que l'app pilote. Si bricolé → cassure en prod.
+- Windows (pour les tests locaux) : `netsh wlan` + pop-up pare-feu à accepter.
+
+### 6.3 Sécurité du POC (mini mais avec les limites à ne pas franchir)
+- **Token** = seul moyen d'écrire la config (pas d'endpoint ouvert).
+- **Credentials provider** (OpenClaw…) : acceptés une fois côté local, **jamais réémis** en clair sur le LAN.
+- Bound du service au **LAN** (pas d'exposition WAN), port dédié.
+- `fs.watch` sur `userData` OK (Windows) ; sinon polling 2 s.
+
+### 6.4 Threading `onnxruntime-web` (wake word)
+- En Electron, la page servie par le serveur Next local n'a **pas de cross-origin isolation** (COOP/COEP absents) → **`SharedArrayBuffer` indisponible** → les builds `*-threaded.wasm` d'onnxruntime **échouent**.
+- **Solution recommandée** : utiliser le build **single-thread** (`ort-wasm-simd`) — inference 30–80 ms, sans impact perceptible pour un wake word. Évite d'ajouter COOP/COEP (qui restreint d'autres ressources locales).
+- Alternative (plus de travail) : ajouter COOP/COEP sur le serveur Next local et garder le threaded.
+
+### 6.5 Micro du wake word
+- `getUserMedia` fonctionne en Electron **sans popup** la plupart du temps (page de confiance).
+- Deux points à tester sous Windows : **conflit d'exclusivité micro** avec d'autres applis ; et **deux flux simultanés** (wake word + voix live) → **partager le même `MediaStream`** via `lib/speech/microphone.ts` existant (ne pas ouvrir un second flux).
+- Le **TTS de réponse repart via le relais holo déjà en place** (fenêtre principale → `postMessage` → `/hologram` joue + lip-sync RMS pendant que la fenêtre principale est minimisée en tray). **Zéro friction** : le wake word appelle le même chemin `handleTtsForHologram`. Le **chime** de confirmation, lui, peut jouer dans la fenêtre principale.
+
+### 6.6 Captive portal / mDNS / isolation des routeurs
+- iOS/Android ouvrent la page « captive » en se connectant au hotspot → il faut répondre `200` aux sondes (`/generate_204`, `captive.apple.com`, etc.) ou **URL manuelle** en fallback.
+- Certains routeurs font de l'**isolation client** → garder le **QR avec l'IP** + « saisir l'IP à la main » en second plan.
+- mDNS parfois capricieux → `jarvis.local` + IP en fallback.
+
+### 6.7 Recovery (appliance sans écran)
+- Téléphone perdu/cassé → il faut un chemin de réassociation : ex. **maintenir le bouton × 10 s → mode provisioning**, ou accès direct sur l'écran principal (le LKG affiche la config ?) au premier setup.
+- Prévoir un **état de réinitialisation** propre (remise à zéro pairing + retour du hotspot).
+
+### 6.8 Chaîne de build/sign/update Linux
+- Build **obligatoirement sur Linux** (AppImage/.deb, x86_64).
+- Signature (optionnel au POC, à planifier) + **auto-update** (compatible electron-builder target `AppImage` → `update-server` ou repo GitHub Releases).
+
+### 6.9 Android/iOS : le projet mobile (séparé)
+- C'est **la vraie masse de travail UI** (détection de l'appliance, saisie Wi-Fi, provisioning, écran de config) — hors périmètre Electron, mais nécessite le contrat d'API (routes + payload) défini au §4.
+
+---
+
+## 7. Mémento technique (à garder sous la main)
+
+- **Standalone** : `afterPack` copie `.next/standalone` → `resources/next/standalone` ; `resolveStandaloneDir({appPath, resourcesPath})` retourne `resources/next/standalone` si `appPath` absent.
+- **userData** : `%APPDATA%\liteforms-web` (localStorage/IndexedDB par origine).
+- **Relais holo** : `postMessage` avec origine `hologramMessageOrigin` ; protocole dans `lib/avatar/hologramMessageProtocol.ts` ; frames RMS via `lipSyncEvents.ts`/`createRmsLipSyncFrame`.
+- **Cross-window config** : événement `storage` (même origine) — utilisé pour l'alcove ; `saveEnvironmentConfig` → l'événement `storage` déclenche dans `/hologram`.
+- **Bridge natif** : `electron/nativeBridge.ts` spawn `nativeBridgeProbe.js` (JSON sur fd 3) ; calibration par `applyNativeLookingGlassBridgeCalibration`. Pattern réutilisable pour un probe Python sous Linux.
+- **Nommage commits** : `Jarvis: <sujet anglais descriptif>`.
+- **Règles** : **jamais de push** sans accord ; ne rien supprimer ; demander en cas de doute ; commit seulement sur demande explicite (miroir).
+- **Tests de non-régression** : `npm test`, `npm run lint`, `npx tsc --noEmit` (ignorer les erreurs pré-existantes listées §1.3), puis `npm run build:electron:main` / `npm run dist:electron`.
+
+---
+
+## 8. Backlog des prochaines actions concrètes
+
+**Portage (workspace `C:\dev\liteforms-electron`)**
+- [ ] Portendre 22 (strip markdown) + 25/26/28/29 (parser + timers + function calling), groupe « logique pure ».
+- [ ] Port `6`/`7` (retunes Alacove/hips) dans la scène Electron + `/hologram`.
+- [ ] Port `19`/`20` (conversation ids OpenClaw) puis `2`.
+- [ ] Port `9` (emotion : `moodConfig` + controller + UI).
+- [ ] Port du wake word `11`→`17` (bundles + UI + cue + config), build **single-thread** ort (§6.4), partage du `MediaStream` micro (§6.5).
+- [ ] À chaque groupe : tests + lint + tsc + build.
+
+**Appliance / POC config**
+- [ ] API `POST /api/device-config` + token minimal + `GET` de statut (§4).
+- [ ] `indexedDbVrmRepository` : `list()`/`loadByName()`.
+- [ ] `applyDeviceConfig()` (réutilise setters + remontage ChatPanel) + événement live (polling d'abord).
+- [ ] Serveur Next en écoute LAN + gestion pare-feu (test Windows puis Linux).
+- [ ] App mobile : contrat d'API + UI config + écran appairage (projet séparé).
+
+**Kiosque Linux (plus tard)**
+- [ ] **Prioritaire** : valider l'holo sur Linux (HLD ou bridge Python) — Phase 1.
+- [ ] Build AppImage/.deb sur Linux, autostart, mDNS, provisioning hotspot (nmcli + polkit), pairing complet, auto-update (Phases 3–4).
+
+---
+
+## 9. Synthèse des chiffres
+
+| Élément | Difficulté | Faisabilité |
+|---|---|---|
+| Portage global web→Electron | cumulée 2→7 selon les blocs | 9/10 |
+| API config téléphone (POC) | 3–4/10 | 9–10/10 |
+| Live apply (sans reboot) | 2/10 | 10/10 (settlers existants) |
+| Provisioning hotspot + pairing | 5–6/10 | 9/10 |
+| **Holo sur Linux (LE PARI)** | 5–6/10 | 9/10 |
+| Sécurité durcie (phase 4) | 3/10 | 9/10 |
+| App mobile (hors Electron) | projet séparé | — |
+
+**Risque n°1 : le driver Looking Glass sous Linux. Risque n°2 : la robustesse privilèges Wi-Fi. Piège de portée : 3 projets imbriqués → POC strict = Phase 1 + Phase 2.**
