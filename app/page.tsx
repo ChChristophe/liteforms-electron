@@ -5,6 +5,7 @@ import { AvatarScene } from "@/components/avatar/AvatarScene";
 import { ChatPanel, initialLocalModelLoadState } from "@/components/chat/ChatPanel";
 import type { CharacterConfig, LocalModelLoadState } from "@/components/chat/ChatPanel";
 import { useHologramBridge } from "@/components/hologram/useHologramBridge";
+import { displayKey, resolveHologramAutoOpen } from "@/components/hologram/hologramAutoOpen";
 import { BridgeRequiredBanner } from "@/components/looking-glass/BridgeRequiredBanner";
 import { OnboardingModal } from "@/components/onboarding/OnboardingModal";
 import {
@@ -140,27 +141,28 @@ export default function HomePage() {
     };
   }, []);
 
-  const bridgeDisplayKey = bridgeDisplay
-    ? `${bridgeDisplay.left}:${bridgeDisplay.top}:${bridgeDisplay.width}:${bridgeDisplay.height}`
-    : "";
   const previousBridgeStateRef = useRef<boolean | undefined>(undefined);
   const previousBridgeDisplayKeyRef = useRef("");
 
   useEffect(() => {
-    const previousConnected = previousBridgeStateRef.current;
-    const previousDisplayKey = previousBridgeDisplayKeyRef.current;
+    const decision = resolveHologramAutoOpen(
+      {
+        hasElectronApi: Boolean(window.liteformsElectron),
+        connected: bridgeConnected,
+        display: bridgeDisplay,
+        hologramActive,
+      },
+      {
+        connected: previousBridgeStateRef.current,
+        displayKey: previousBridgeDisplayKeyRef.current,
+      },
+    );
     previousBridgeStateRef.current = bridgeConnected;
-    previousBridgeDisplayKeyRef.current = bridgeDisplayKey;
+    previousBridgeDisplayKeyRef.current = displayKey(bridgeDisplay);
 
-    if (!window.liteformsElectron || bridgeConnected !== true || !bridgeDisplay) return;
-    if (previousConnected === true && previousDisplayKey === bridgeDisplayKey) return;
-
-    if (hologramActive) {
-      void reopenHologram(modelUrl, bridgeDisplay);
-    } else {
-      void openHologram(modelUrl, bridgeDisplay);
-    }
-  }, [bridgeConnected, bridgeDisplay, bridgeDisplayKey, hologramActive, modelUrl, openHologram, reopenHologram]);
+    if (decision === "open") void openHologram(modelUrl, bridgeDisplay);
+    if (decision === "reopen") void reopenHologram(modelUrl, bridgeDisplay);
+  }, [bridgeConnected, bridgeDisplay, hologramActive, modelUrl, openHologram, reopenHologram]);
 
   const previousHologramModelRef = useRef<string | undefined>(modelUrl);
   useEffect(() => {
