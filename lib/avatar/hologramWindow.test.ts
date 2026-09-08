@@ -53,6 +53,12 @@ describe("findSecondaryScreen", () => {
       secondary,
     ], { screenLeft: 0, screenTop: 0 })).toBe(secondary);
   });
+
+  it("returns no screen when only the primary display exists", () => {
+    expect(findSecondaryScreen([
+      { left: 0, top: 0, width: 1536, height: 864, isPrimary: true },
+    ], { screenLeft: 128, screenTop: 0 })).toBeUndefined();
+  });
 });
 
 describe("buildPopupFeatureString", () => {
@@ -81,6 +87,28 @@ describe("openHldHologramWindow", () => {
 
     expect(calls[0][0]).toBe("");
     expect(calls[0][1]).toBe("liteforms-hld-hologram");
+  });
+
+  it("uses supplied Looking Glass bounds without re-querying the browser screens", async () => {
+    const calls: unknown[][] = [];
+    const win = {
+      getScreenDetails: async () => {
+        throw new Error("screen permission should not be needed");
+      },
+      open: (...args: unknown[]) => {
+        calls.push(args);
+        return null;
+      },
+    };
+
+    await openHldHologramWindow(win as unknown as Window, "/hologram", {
+      left: 1920,
+      top: 0,
+      width: 1440,
+      height: 2560,
+    });
+
+    expect(calls[0][2]).toContain("left=1920,top=0,width=1440,height=2560");
   });
 });
 

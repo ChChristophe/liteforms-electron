@@ -2,13 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
-import { openHldHologramWindow } from "@/lib/avatar/hologramWindow";
+import { openHldHologramWindow, type ScreenLike } from "@/lib/avatar/hologramWindow";
 import {
   buildHologramRouteUrl,
-  sendLipsyncToHologram,
-  sendLiveAudioToHologram,
-  sendModelBytesToHologram,
-  sendUtteranceToHologram,
+  hologramMessageOrigin,
+  postHologramMessage,
+  type MainToHologramMessage,
 } from "@/lib/avatar/hologramMessageProtocol";
 import type { TtsResult } from "@/lib/speech";
 import { avatarLipSyncEventName, type AvatarLipSyncFrame } from "@/lib/avatar/lipSyncEvents";
@@ -33,6 +32,47 @@ export function useHologramBridge() {
   const relayRef = useRef<((event: Event) => void) | null>(null);
   const closePollerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const forwardedCountRef = useRef(0);
+  const readyRef = useRef(false);
+  const targetOriginRef = useRef<string | null>(null);
+  const pendingMessagesRef = useRef<MainToHologramMessage[]>([]);
+  const readyListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
+
+  const sendPendingMessage = useCallback((win: Window, message: MainToHologramMessage, targetOrigin: string) => {
+    const transfer = "bytes" in message ? [message.bytes] : undefined;
+    postHologramMessage(win, message, targetOrigin, transfer);
+  }, []);
+
+  const sendMessage = useCallback((win: Window, message: MainToHologramMessage): boolean => {
+    const targetOrigin = targetOriginRef.current;
+    if (!targetOrigin || win.closed) return false;
+
+    if (!readyRef.current) {
+      if (message.kind === "lipsync") {
+        pendingMessagesRef.current = pendingMessagesRef.current.filter(({ kind }) => kind !== "lipsync");
+      } else if (pendingMessagesRef.current.length >= 64) {
+        return false;
+      }
+      pendingMessagesRef.current.push(message);
+      return true;
+    }
+
+    try {
+      sendPendingMessage(win, message, targetOrigin);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [sendPendingMessage]);
+
+  const resetTransport = useCallback(() => {
+    if (readyListenerRef.current) {
+      window.removeEventListener("message", readyListenerRef.current);
+      readyListenerRef.current = null;
+    }
+    readyRef.current = false;
+    targetOriginRef.current = null;
+    pendingMessagesRef.current = [];
+  }, []);
 
   const stopClosePoller = useCallback(() => {
     if (closePollerRef.current !== null) {
@@ -49,12 +89,12 @@ export function useHologramBridge() {
       if (forwardedCountRef.current === 1 || forwardedCountRef.current % 50 === 0) {
         logDiagnostic(`holo-bridge relay forward total=${forwardedCountRef.current} firstWeight=${frame.weight.toFixed(3)}`);
       }
-      sendLipsyncToHologram(win, frame);
+      sendMessage(win, { origin: hologramMessageOrigin, kind: "lipsync", frame });
     };
     window.addEventListener(avatarLipSyncEventName, onFrame);
     relayRef.current = onFrame;
     logDiagnostic(`holo-bridge relay start name=${win.name}`);
-  }, []);
+  }, [sendMessage]);
 
   const stopRelay = useCallback(() => {
     if (relayRef.current) {
@@ -69,13 +109,14 @@ export function useHologramBridge() {
     holoWinRef.current = null;
     stopClosePoller();
     stopRelay();
+    resetTransport();
     setHologramActive(false);
     if (win && !win.closed) {
       win.close();
     }
-  }, [stopRelay, stopClosePoller]);
+  }, [resetTransport, stopRelay, stopClosePoller]);
 
-  const open = useCallback(async (modelUrl: string | undefined) => {
+  const open = useCallback(async (modelUrl: string | undefined, targetScreen?: ScreenLike) => {
     if (holoWinRef.current && !holoWinRef.current.closed) return;
     stopClosePoller();
 
@@ -83,14 +124,39 @@ export function useHologramBridge() {
     const base = window.location.origin;
     const shareUrl = shareable && "url" in shareable ? shareable.url : undefined;
     const url = buildHologramRouteUrl(base, shareUrl);
-    const popup = await openHldHologramWindow(window, url);
+    const popup = await openHldHologramWindow(window, url, targetScreen);
     if (!popup) return;
 
     holoWinRef.current = popup;
+    targetOriginRef.current = new URL(url).origin;
+    readyRef.current = false;
+    const onReadyMessage = (event: MessageEvent) => {
+      if (event.source !== popup || event.origin !== targetOriginRef.current) return;
+      const data = event.data as { origin?: unknown; kind?: unknown } | undefined;
+      if (data?.origin !== hologramMessageOrigin || data.kind !== "ready") return;
+
+      readyRef.current = true;
+      const pending = pendingMessagesRef.current;
+      pendingMessagesRef.current = [];
+      const targetOrigin = targetOriginRef.current;
+      if (!targetOrigin) return;
+      for (const message of pending) {
+        try {
+          sendPendingMessage(popup, message, targetOrigin);
+        } catch {
+          // The popup may have closed between ready and flush.
+          break;
+        }
+      }
+    };
+    readyListenerRef.current = onReadyMessage;
+    window.addEventListener("message", onReadyMessage);
     startRelay(popup);
 
     if (shareable && "bytes" in shareable) {
-      void sendModelBytesToHologram(popup, shareable.bytes);
+      sendMessage(popup, { origin: hologramMessageOrigin, kind: "model-bytes", bytes: shareable.bytes });
+    } else if (shareable && "url" in shareable) {
+      sendMessage(popup, { origin: hologramMessageOrigin, kind: "model-url", url: shareable.url });
     }
 
     logDiagnostic(`holo-bridge window open name=${popup.name} url=${url}`);
@@ -105,38 +171,66 @@ export function useHologramBridge() {
       stopClosePoller();
       holoWinRef.current = null;
       stopRelay();
+      resetTransport();
       setHologramActive(false);
       logDiagnostic("holo-bridge window closed");
     }, 1000);
 
     setHologramActive(true);
-  }, [startRelay, stopRelay, stopClosePoller]);
+  }, [resetTransport, sendMessage, sendPendingMessage, startRelay, stopRelay, stopClosePoller]);
+
+  const reopen = useCallback(async (modelUrl: string | undefined, targetScreen?: ScreenLike) => {
+    close();
+    await open(modelUrl, targetScreen);
+  }, [close, open]);
 
   const handleTtsResult = useCallback((result: TtsResult): boolean => {
     const win = holoWinRef.current;
     if (!win || win.closed) return false;
-    sendUtteranceToHologram(win, result);
+    if (!sendMessage(win, {
+      origin: hologramMessageOrigin,
+      kind: "utter-bytes",
+      utt: {
+        mimeType: result.mimeType,
+        sampleRate: result.sampleRate,
+        words: result.words,
+        lipSyncGain: result.lipSyncGain,
+        lipSyncMaxWeight: result.lipSyncMaxWeight,
+        lipSyncPreferMorphTarget: result.lipSyncPreferMorphTarget,
+      },
+      bytes: result.audio,
+    })) return false;
     logDiagnostic(`holo-bridge utter forwarded mime=${result.mimeType} bytes=${result.audio.byteLength}`);
     return true;
-  }, []);
+  }, [sendMessage]);
 
   const forwardRealtimeAudio = useCallback(async (blob: Blob): Promise<boolean> => {
     const win = holoWinRef.current;
     if (!win || win.closed) return false;
     try {
       const bytes = await blob.arrayBuffer();
-      sendLiveAudioToHologram(win, bytes);
+      if (!sendMessage(win, { origin: hologramMessageOrigin, kind: "live-audio", bytes })) return false;
       logDiagnostic(`holo-bridge live-audio forwarded bytes=${bytes.byteLength}`);
       return true;
     } catch (err) {
       logDiagnostic(`holo-bridge live-audio forward error ${String(err)}`);
       return false;
     }
-  }, []);
+  }, [sendMessage]);
+
+  const updateModel = useCallback(async (modelUrl: string | undefined): Promise<boolean> => {
+    const win = holoWinRef.current;
+    if (!win || win.closed) return false;
+    const shareable = await resolveShareableModel(modelUrl);
+    if (!shareable) return false;
+    return "url" in shareable
+      ? sendMessage(win, { origin: hologramMessageOrigin, kind: "model-url", url: shareable.url })
+      : sendMessage(win, { origin: hologramMessageOrigin, kind: "model-bytes", bytes: shareable.bytes });
+  }, [sendMessage]);
 
   useEffect(() => {
     return () => close();
   }, [close]);
 
-  return { hologramActive, open, close, handleTtsResult, forwardRealtimeAudio };
+  return { hologramActive, open, reopen, close, handleTtsResult, forwardRealtimeAudio, updateModel };
 }

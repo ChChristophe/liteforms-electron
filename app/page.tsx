@@ -7,7 +7,10 @@ import type { CharacterConfig, LocalModelLoadState } from "@/components/chat/Cha
 import { useHologramBridge } from "@/components/hologram/useHologramBridge";
 import { BridgeRequiredBanner } from "@/components/looking-glass/BridgeRequiredBanner";
 import { OnboardingModal } from "@/components/onboarding/OnboardingModal";
-import { checkLookingGlassBridgeConnection } from "@/lib/avatar/bridgeConnection";
+import {
+  getLookingGlassBridgeConnection,
+  type LookingGlassDisplayBounds,
+} from "@/lib/avatar/bridgeConnection";
 import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import type { BaseProviderConfig } from "@/lib/llm";
 import type { AsrConfig, RealtimeVoiceConfig, TtsConfig } from "@/lib/speech";
@@ -17,7 +20,7 @@ import { createIndexedDbVrmRepository } from "@/lib/storage/indexedDbVrmReposito
 import type { VrmRepository } from "@/lib/storage/vrmRepository";
 
 const onboardingStorageKey = "liteforms.onboardingMode";
-const bridgeConnectionRetryMs = 5000;
+const bridgeConnectionPollMs = 1500;
 
 const defaultCharacter: CharacterConfig = {
   name: "Clawdia",
@@ -45,9 +48,18 @@ export default function HomePage() {
   const [chatPanelKey, setChatPanelKey] = useState(0);
   const [modalLoadState, setModalLoadState] = useState<LocalModelLoadState[]>(initialLocalModelLoadState);
   const [bridgeConnected, setBridgeConnected] = useState<boolean | undefined>(undefined);
+  const [bridgeDisplay, setBridgeDisplay] = useState<LookingGlassDisplayBounds | undefined>(undefined);
   const [isBridgeBannerDismissed, setIsBridgeBannerDismissed] = useState(false);
   const showBridgeBanner = bridgeConnected === false && !isBridgeBannerDismissed;
-  const { hologramActive, open: openHologram, close: closeHologram, handleTtsResult, forwardRealtimeAudio } = useHologramBridge();
+  const {
+    hologramActive,
+    open: openHologram,
+    reopen: reopenHologram,
+    close: closeHologram,
+    handleTtsResult,
+    forwardRealtimeAudio,
+    updateModel,
+  } = useHologramBridge();
 
   const pageLogReff = useRef(false);
   if (!pageLogReff.current) {
@@ -103,28 +115,60 @@ export default function HomePage() {
 
   useEffect(() => {
     let disposed = false;
-    let retryId: number | undefined;
+    let checking = false;
 
     const checkBridge = async () => {
-      const connected = await checkLookingGlassBridgeConnection();
-      if (disposed) return;
-      setBridgeConnected(connected);
-      if (connected && retryId !== undefined) {
-        window.clearInterval(retryId);
-        retryId = undefined;
+      if (checking) return;
+      checking = true;
+      try {
+        const connection = await getLookingGlassBridgeConnection();
+        if (disposed) return;
+        setBridgeConnected(connection.connected);
+        setBridgeDisplay(connection.display);
+      } finally {
+        checking = false;
       }
     };
 
     void checkBridge();
-    retryId = window.setInterval(() => {
+    const pollId = window.setInterval(() => {
       void checkBridge();
-    }, bridgeConnectionRetryMs);
-
+    }, bridgeConnectionPollMs);
     return () => {
       disposed = true;
-      if (retryId !== undefined) window.clearInterval(retryId);
+      window.clearInterval(pollId);
     };
   }, []);
+
+  const bridgeDisplayKey = bridgeDisplay
+    ? `${bridgeDisplay.left}:${bridgeDisplay.top}:${bridgeDisplay.width}:${bridgeDisplay.height}`
+    : "";
+  const previousBridgeStateRef = useRef<boolean | undefined>(undefined);
+  const previousBridgeDisplayKeyRef = useRef("");
+
+  useEffect(() => {
+    const previousConnected = previousBridgeStateRef.current;
+    const previousDisplayKey = previousBridgeDisplayKeyRef.current;
+    previousBridgeStateRef.current = bridgeConnected;
+    previousBridgeDisplayKeyRef.current = bridgeDisplayKey;
+
+    if (!window.liteformsElectron || bridgeConnected !== true || !bridgeDisplay) return;
+    if (previousConnected === true && previousDisplayKey === bridgeDisplayKey) return;
+
+    if (hologramActive) {
+      void reopenHologram(modelUrl, bridgeDisplay);
+    } else {
+      void openHologram(modelUrl, bridgeDisplay);
+    }
+  }, [bridgeConnected, bridgeDisplay, bridgeDisplayKey, hologramActive, modelUrl, openHologram, reopenHologram]);
+
+  const previousHologramModelRef = useRef<string | undefined>(modelUrl);
+  useEffect(() => {
+    const previousModelUrl = previousHologramModelRef.current;
+    previousHologramModelRef.current = modelUrl;
+    if (!hologramActive || previousModelUrl === modelUrl) return;
+    void updateModel(modelUrl);
+  }, [hologramActive, modelUrl, updateModel]);
 
   const handleLocalModelLoadStateChange = useCallback((state: LocalModelLoadState[]) => {
     setModalLoadState(state);

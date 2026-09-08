@@ -18,6 +18,7 @@ let liveAnalyser: AnalyserNode | null = null;
 let liveSamples: Uint8Array<ArrayBuffer> | null = null;
 let livePlaying = false;
 let liveLoopStarted = false;
+let liveAnimationFrame: number | null = null;
 let nextLiveTime = 0;
 
 function getSharedAudioContext(): AudioContext {
@@ -43,7 +44,12 @@ function startLiveLipSyncLoop() {
   if (liveLoopStarted) return;
   liveLoopStarted = true;
   const tick = () => {
-    if (livePlaying && liveAnalyser && liveSamples) {
+    if (!livePlaying) {
+      liveLoopStarted = false;
+      liveAnimationFrame = null;
+      return;
+    }
+    if (liveAnalyser && liveSamples) {
       liveAnalyser.getByteTimeDomainData(liveSamples);
       let sum = 0;
       for (let i = 0; i < liveSamples.length; i++) {
@@ -55,9 +61,9 @@ function startLiveLipSyncLoop() {
         dispatchAvatarLipSyncFrame(createRmsLipSyncFrame(Math.min(1, Math.max(0, (rms - 0.01) / 0.18))));
       }
     }
-    requestAnimationFrame(tick);
+    liveAnimationFrame = requestAnimationFrame(tick);
   };
-  requestAnimationFrame(tick);
+  liveAnimationFrame = requestAnimationFrame(tick);
 }
 
 function readInitialModelUrl(): string | undefined {
@@ -76,13 +82,22 @@ export default function HologramPage() {
 
     let lipsyncCount = 0;
     let lipsyncLoggedAt = 0;
+    const opener = window.opener as Window | null;
+    const modelObjectUrlRef = { current: null as string | null };
 
     const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || event.source !== opener) return;
       const data = event.data as MainToHologramMessage | undefined;
       if (!data || data.origin !== hologramMessageOrigin) return;
 
       switch (data.kind) {
         case "utter-bytes": {
+          if (
+            !(data.bytes instanceof ArrayBuffer)
+            || !data.utt
+            || typeof data.utt !== "object"
+            || typeof data.utt.mimeType !== "string"
+          ) return;
           const result: TtsResult = {
             audio: data.bytes,
             mimeType: data.utt.mimeType,
@@ -103,6 +118,7 @@ export default function HologramPage() {
           break;
         }
         case "live-audio": {
+          if (!(data.bytes instanceof ArrayBuffer)) return;
           liveChainRef.current = liveChainRef.current.then(async () => {
             try {
               const context = getSharedAudioContext();
@@ -133,11 +149,15 @@ export default function HologramPage() {
           dispatchAvatarLipSyncFrame(data.frame);
           break;
         case "model-url":
-          if (data.url) setModelUrl(data.url);
+          if (typeof data.url === "string" && data.url) setModelUrl(data.url);
           break;
         case "model-bytes": {
+          if (!(data.bytes instanceof ArrayBuffer)) return;
           const blob = new Blob([data.bytes]);
-          setModelUrl(URL.createObjectURL(blob));
+          const nextUrl = URL.createObjectURL(blob);
+          if (modelObjectUrlRef.current) URL.revokeObjectURL(modelObjectUrlRef.current);
+          modelObjectUrlRef.current = nextUrl;
+          setModelUrl(nextUrl);
           break;
         }
         default:
@@ -148,14 +168,21 @@ export default function HologramPage() {
     window.addEventListener("message", onMessage);
     logDiagnostic("holo-page message listener attached");
 
-    const opener = window.opener as Window | null;
     if (opener) {
       const ready: HologramToMainMessage = { origin: hologramMessageOrigin, kind: "ready" };
-      opener.postMessage(ready, "*");
+      opener.postMessage(ready, window.location.origin);
       logDiagnostic("holo-page sent ready to opener");
     }
 
-    return () => window.removeEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      if (modelObjectUrlRef.current) URL.revokeObjectURL(modelObjectUrlRef.current);
+      livePlaying = false;
+      if (liveAnimationFrame !== null) cancelAnimationFrame(liveAnimationFrame);
+      liveAnimationFrame = null;
+      liveLoopStarted = false;
+      nextLiveTime = 0;
+    };
   }, []);
 
   return (

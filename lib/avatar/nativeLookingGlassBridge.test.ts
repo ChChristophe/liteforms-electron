@@ -12,7 +12,7 @@ const getState = vi.fn();
 
 function makeElectronApi() {
   return {
-    isElectron: true,
+    isElectron: true as const,
     platform: "win32" as const,
     versions: { chrome: "1", electron: "1", node: "1" },
     lookingGlassBridge: { getDriverStatus, getState },

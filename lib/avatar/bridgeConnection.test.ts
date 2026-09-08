@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkLookingGlassBridgeConnection } from "./bridgeConnection";
+import { checkLookingGlassBridgeConnection, getLookingGlassBridgeConnection } from "./bridgeConnection";
 
 describe("checkLookingGlassBridgeConnection", () => {
   it("reports Bridge connected when Bridge.js status succeeds", async () => {
@@ -24,23 +24,30 @@ describe("checkLookingGlassBridgeConnection", () => {
     await expect(checkLookingGlassBridgeConnection({ getBridgeClient })).resolves.toBe(false);
   });
 
-  it("uses the native Electron Bridge state when available", async () => {
+  it("uses the connected native display when available", async () => {
     const status = vi.fn().mockResolvedValue(false);
-    const getNativeBridgeState = vi.fn().mockResolvedValue({ available: true, source: "native" });
+    const getNativeBridgeState = vi.fn().mockResolvedValue({
+      available: true,
+      source: "native",
+      display: { serial: "LKG-123", width: 1440, height: 2560 },
+      calibration: { serial: "LKG-123" },
+    });
 
-    await expect(
-      checkLookingGlassBridgeConnection({
-        getBridgeClient: () => ({ status }),
-        getNativeBridgeState,
-        hasNativeBridgeApi: () => true,
-      })
-    ).resolves.toBe(true);
+    await expect(getLookingGlassBridgeConnection({
+      getBridgeClient: () => ({ status }),
+      getNativeBridgeState,
+      hasNativeBridgeApi: () => true,
+    })).resolves.toEqual({
+      connected: true,
+      source: "native",
+      display: { left: 0, top: 0, width: 1440, height: 2560 },
+    });
 
     expect(getNativeBridgeState).toHaveBeenCalledOnce();
     expect(status).not.toHaveBeenCalled();
   });
 
-  it("reports Bridge missing when the native Electron driver exists but no display is detected", async () => {
+  it("falls back to Bridge.js when the native driver has no display", async () => {
     const status = vi.fn().mockResolvedValue(true);
     const getNativeBridgeState = vi.fn().mockResolvedValue({
       available: false,
@@ -48,15 +55,13 @@ describe("checkLookingGlassBridgeConnection", () => {
       error: "No Looking Glass displays were reported by the native Bridge driver.",
     });
 
-    await expect(
-      checkLookingGlassBridgeConnection({
-        getBridgeClient: () => ({ status }),
-        getNativeBridgeState,
-        hasNativeBridgeApi: () => true,
-      })
-    ).resolves.toBe(false);
+    await expect(getLookingGlassBridgeConnection({
+      getBridgeClient: () => ({ status }),
+      getNativeBridgeState,
+      hasNativeBridgeApi: () => true,
+    })).resolves.toEqual({ connected: true, source: "bridge-js" });
 
     expect(getNativeBridgeState).toHaveBeenCalledOnce();
-    expect(status).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledOnce();
   });
 });

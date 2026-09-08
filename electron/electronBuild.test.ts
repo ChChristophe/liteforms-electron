@@ -33,7 +33,7 @@ async function loadNextConfig(electronBuild?: string) {
     process.env.LITEFORMS_ELECTRON_BUILD = electronBuild;
   }
 
-  return (await import("../next.config.ts")).default;
+  return (await import("../next.config")).default;
 }
 
 describe("Electron build configuration", () => {
@@ -94,8 +94,6 @@ describe("Electron build configuration", () => {
     expect(builderConfig.files).toEqual(
       expect.arrayContaining([
         "dist-electron/**",
-        ".next/standalone/**",
-        ".next/static/**",
         "node_modules/@koromix/koffi-*/**",
         "node_modules/koffi/**",
         "native/bridge/*.md",
@@ -131,7 +129,7 @@ describe("Electron build configuration", () => {
     );
     expect(builderConfig.mac.files).toBeUndefined();
     expect(builderConfig.asarUnpack).toEqual(
-      expect.arrayContaining([".next/standalone/**", "node_modules/@koromix/koffi-*/**", "node_modules/koffi/**"])
+      expect.arrayContaining(["node_modules/@koromix/koffi-*/**", "node_modules/koffi/**"])
     );
     expect(builderConfig.extraResources).toEqual(
       expect.arrayContaining([
@@ -141,7 +139,12 @@ describe("Electron build configuration", () => {
         })
       ])
     );
-    expect(builderConfig.linux).toBeUndefined();
+    expect(builderConfig.linux).toEqual(
+      expect.objectContaining({
+        target: ["AppImage"],
+        category: "AudioVideo"
+      })
+    );
   });
 
   it("switches native binary excludes for macOS packages without broad platform file globs", () => {
@@ -257,7 +260,7 @@ describe("Electron build configuration", () => {
         isPackaged: true,
         resourcesPath: "C:\\Liteforms\\resources"
       })
-    ).toBe("C:\\Liteforms\\resources\\app.asar.unpacked\\.next\\standalone");
+    ).toBe("C:\\Liteforms\\resources\\next\\standalone");
     expect(
       resolveStandaloneDir({
         appPath: "C:\\repo\\liteforms-web",

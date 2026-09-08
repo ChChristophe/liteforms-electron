@@ -2,7 +2,21 @@ import { BridgeClient } from "@lookingglass/bridge";
 import {
   getNativeLookingGlassBridgeState,
   hasNativeLookingGlassBridgeApi,
+  isNativeLookingGlassBridgeDisplayConnected,
 } from "./nativeLookingGlassBridge";
+
+export type LookingGlassDisplayBounds = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+export type LookingGlassBridgeConnection = {
+  connected: boolean;
+  source: "native" | "bridge-js" | "none";
+  display?: LookingGlassDisplayBounds;
+};
 
 type BridgeConnectionOptions = {
   getBridgeClient?: () => Pick<BridgeClient, "status">;
@@ -10,18 +24,45 @@ type BridgeConnectionOptions = {
   hasNativeBridgeApi?: typeof hasNativeLookingGlassBridgeApi;
 };
 
-export function checkLookingGlassBridgeConnection({
+export async function getLookingGlassBridgeConnection({
   getBridgeClient = () => BridgeClient.getInstance(),
   getNativeBridgeState = getNativeLookingGlassBridgeState,
   hasNativeBridgeApi = hasNativeLookingGlassBridgeApi,
-}: BridgeConnectionOptions = {}): Promise<boolean> {
+}: BridgeConnectionOptions = {}): Promise<LookingGlassBridgeConnection> {
   if (hasNativeBridgeApi()) {
-    return getNativeBridgeState().then((state) => state.available).catch(() => false);
+    try {
+      const state = await getNativeBridgeState();
+      if (state.available && isNativeLookingGlassBridgeDisplayConnected(state)) {
+        return {
+          connected: true,
+          source: "native",
+          display: {
+            left: state.display.x ?? 0,
+            top: state.display.y ?? 0,
+            width: state.display.width,
+            height: state.display.height,
+          },
+        };
+      }
+    } catch {
+      // Bridge.js remains a valid fallback when the native probe is unavailable.
+    }
   }
 
   try {
-    return getBridgeClient().status();
+    const connected = await getBridgeClient().status();
+    return {
+      connected,
+      source: connected ? "bridge-js" : "none",
+    };
   } catch {
-    return Promise.resolve(false);
+    return {
+      connected: false,
+      source: "none",
+    };
   }
+}
+
+export async function checkLookingGlassBridgeConnection(options: BridgeConnectionOptions = {}): Promise<boolean> {
+  return (await getLookingGlassBridgeConnection(options)).connected;
 }

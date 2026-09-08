@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Object3D } from "three";
 import { repairMorphTargetDictionaries } from "./vrmMorphTargetRepair";
 
 // Mirrors the pup4.vrm scenario: mesh.extras is undefined, but prim.extras.targetNames exists.
@@ -164,7 +165,10 @@ function createMesh(name: string, morphCount: number, existingDict?: Record<stri
   };
 }
 
-function createScene(children: object[]) {
+type TestMesh = FakeMesh & { name: string };
+type TestScene = Object3D & { children: TestMesh[] };
+
+function createScene(children: object[]): TestScene {
   return {
     traverse(visitor: (object: object) => void) {
       visitor(this);
@@ -172,6 +176,6 @@ function createScene(children: object[]) {
         visitor(child);
       }
     },
-    children
-  } as never;
+    children: children as TestMesh[]
+  } as unknown as TestScene;
 }

@@ -68,6 +68,11 @@ export function findSecondaryScreen(
   const nonPrimary = screens.find((screen) => screen.isPrimary === false);
   if (nonPrimary) return nonPrimary;
 
+  // With a single screen there is no secondary display: returning a screen here
+  // would target the main display (and the window position is not a reliable
+  // screen identity — a window parked at x=128 on the primary would match).
+  if (screens.length <= 1) return undefined;
+
   const currentLeft = currentWindow.screenLeft ?? currentWindow.screenX ?? 0;
   const currentTop = currentWindow.screenTop ?? currentWindow.screenY ?? 0;
   return screens.find((screen) => screen.left !== currentLeft || screen.top !== currentTop);
@@ -90,22 +95,26 @@ export function buildPopupFeatureString(screen?: ScreenLike): string {
   ].join(",");
 }
 
-export async function openHldHologramWindow(win: Window, routeUrl?: string): Promise<Window | null> {
-  let targetScreen: ScreenLike | undefined;
+export async function openHldHologramWindow(
+  win: Window,
+  routeUrl?: string,
+  targetScreen?: ScreenLike,
+): Promise<Window | null> {
+  let resolvedScreen = targetScreen;
 
-  if ("getScreenDetails" in win) {
+  if (!resolvedScreen && "getScreenDetails" in win) {
     try {
       const screenDetails = await (win as Window & {
         getScreenDetails: () => Promise<{ screens: ScreenLike[] }>;
       }).getScreenDetails();
-      targetScreen = findSecondaryScreen(screenDetails.screens, win);
+      resolvedScreen = findSecondaryScreen(screenDetails.screens, win);
     } catch {
-      targetScreen = undefined;
+      resolvedScreen = undefined;
     }
   }
 
   const url = routeUrl ?? "";
-  return win.open(url, "liteforms-hld-hologram", buildPopupFeatureString(targetScreen));
+  return win.open(url, "liteforms-hld-hologram", buildPopupFeatureString(resolvedScreen));
 }
 
 type LookingGlassPopupWindowLike = {

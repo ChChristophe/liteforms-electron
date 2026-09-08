@@ -212,6 +212,32 @@ function findLookingGlassDisplay(): Electron.Display | undefined {
   );
 }
 
+function findDisplayForPopupFeatures(features: string | undefined): Electron.Display | undefined {
+  if (!features) return undefined;
+
+  const values = new Map(
+    features.split(",").map((feature) => {
+      const [name, value] = feature.split("=", 2);
+      return [name?.trim().toLowerCase(), Number(value)] as const;
+    }),
+  );
+  const left = values.get("left");
+  const top = values.get("top");
+  const width = values.get("width");
+  const height = values.get("height");
+  if (
+    left === undefined || top === undefined || width === undefined || height === undefined
+    || ![left, top, width, height].every((value) => Number.isFinite(value))
+  ) return undefined;
+
+  return screen.getAllDisplays().find((display) => (
+    display.bounds.x === left
+    && display.bounds.y === top
+    && display.bounds.width === width
+    && display.bounds.height === height
+  )) ?? screen.getDisplayMatching({ x: left, y: top, width, height });
+}
+
 function createWindow(url: string) {
   const allowedOrigin = new URL(url).origin;
 
@@ -255,7 +281,7 @@ function createWindow(url: string) {
     // x/y), so Electron would otherwise fill the primary screen with the portrait
     // quilt canvas stuck at the left edge. Place it explicitly on the LKG display.
     if (decision.response.action === "allow" && isHologramWindowOpenRequest(details)) {
-      const display = findLookingGlassDisplay();
+      const display = findDisplayForPopupFeatures(details.features) ?? findLookingGlassDisplay();
       if (display) {
         decision.response.overrideBrowserWindowOptions = {
           ...hologramWindowBrowserOptions,
@@ -465,68 +491,6 @@ app.whenReady().then(async () => {
   appUrl = await resolveAppUrl();
   createWindow(appUrl);
   ensureTray();
-
-  // Zero-click flow: when a Looking Glass display is attached, open the /hologram
-  // window automatically at launch — no "Voir en holo" click required. The
-  // /hologram window's own session auto-enter (calibration-gated in
-  // AvatarScene.tsx) then drives the quilt. With LITEFORMS_DEBUG_HOLO=1 the
-  // self-test harness uses the same click path after a longer settle window.
-  const lkgDisplay = findLookingGlassDisplay();
-  if (lkgDisplay) {
-    let label = "";
-    try {
-      label = (lkgDisplay as unknown as { label?: string }).label ?? "";
-    } catch {
-      label = "";
-    }
-    writeDiagnostic(
-      `[holo-auto] detected display label="${label}" size=${lkgDisplay.size.width}x${lkgDisplay.size.height} bounds=${lkgDisplay.bounds.x},${lkgDisplay.bounds.y}`
-    );
-  } else {
-    writeDiagnostic("[holo-auto] no Looking Glass display detected; hologram stays manual");
-  }
-  const scheduleHologramAutoOpen = (delayMs: number, attempts: number) => {
-    setTimeout(() => {
-      if (!mainWindow) return;
-      writeDiagnostic("[holo-auto] scheduling toggle clicks");
-      let remaining = attempts;
-      let timer: NodeJS.Timeout | undefined;
-      const tryClick = () => {
-        if (!mainWindow) return;
-        mainWindow.webContents
-          .executeJavaScript(
-            [
-              "(() => { const b = document.querySelector('.hologram-toggle');",
-              "  if (!b) return 'no-button';",
-              "  if (b.disabled) return 'disabled';",
-              "  if ((b.textContent || '').trim() === 'Normal') return 'already-active';",
-              "  b.click(); return 'clicked'; })()",
-            ].join("\n")
-          )
-          .then((result) => {
-            writeDiagnostic(`[holo-auto] toggle click result=${String(result)}`);
-            if (result === "clicked" || result === "already-active") {
-              if (timer) clearInterval(timer);
-              timer = undefined;
-              return;
-            }
-            remaining -= 1;
-            if (remaining <= 0 && timer) clearInterval(timer);
-          })
-          .catch(() => {
-            remaining -= 1;
-            if (remaining <= 0 && timer) clearInterval(timer);
-          });
-      };
-      tryClick();
-      timer = setInterval(tryClick, 1500);
-    }, delayMs);
-  };
-  if (lkgDisplay) {
-    // Debug runs reuse the same click path but after a longer settle (the model
-    // + bridge checks must be done) so the .hologram-toggle is usable.
-    scheduleHologramAutoOpen(process.env.LITEFORMS_DEBUG_HOLO ? 6000 : 2500, 4);
-  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0 && appUrl) {
