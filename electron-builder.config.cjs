@@ -19,11 +19,18 @@ const windowsSigningConfig = hasAzureTrustedSigningEnv
       signAndEditExecutable: false
     };
 
+const electronBuilderPlatform = process.env.LITEFORMS_ELECTRON_BUILDER_PLATFORM ?? process.platform;
+const nativeBridgePlatformPrefix =
+  electronBuilderPlatform === "darwin" ? "darwin-" : electronBuilderPlatform === "win32" ? "win32-" : "linux-";
+
+// Package only the native Bridge assets matching the build platform: the full
+// linux-x64 set is ~250MB and must not leak into Windows/macOS installers.
 const nativeBridgeResources = [
   { from: "native/bridge/win32-x64", to: "bridge/win32-x64", filter: ["**/*"] },
   { from: "native/bridge/darwin-x64", to: "bridge/darwin-x64", filter: ["**/*"] },
-  { from: "native/bridge/darwin-arm64", to: "bridge/darwin-arm64", filter: ["**/*"] }
-].filter(({ from }) => existsSync(from));
+  { from: "native/bridge/darwin-arm64", to: "bridge/darwin-arm64", filter: ["**/*"] },
+  { from: "native/bridge/linux-x64", to: "bridge/linux-x64", filter: ["**/*"] }
+].filter(({ from }) => existsSync(from) && from.includes(`/${nativeBridgePlatformPrefix}`));
 
 // Do not package cross-platform native addons; Windows signing rejects non-PE .node files.
 const windowsNativeBinaryExcludes = [
@@ -44,7 +51,6 @@ const macNativeBinaryExcludes = [
   "!**/node_modules/**/bin/napi-*/win32/**"
 ];
 
-const electronBuilderPlatform = process.env.LITEFORMS_ELECTRON_BUILDER_PLATFORM ?? process.platform;
 const platformNativeBinaryExcludes =
   electronBuilderPlatform === "darwin"
     ? macNativeBinaryExcludes

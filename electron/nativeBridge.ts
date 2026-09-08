@@ -249,6 +249,11 @@ function createNativeBridgeProbeEnv(resolved: SupportedNativeBridgeRuntime): Ele
     env.DYLD_LIBRARY_PATH = currentPath ? `${resolved.runtimeDir}${delimiter}${currentPath}` : resolved.runtimeDir;
   }
 
+  if (process.platform === "linux") {
+    const currentPath = env.LD_LIBRARY_PATH ?? "";
+    env.LD_LIBRARY_PATH = currentPath ? `${resolved.runtimeDir}:${currentPath}` : resolved.runtimeDir;
+  }
+
   return env;
 }
 

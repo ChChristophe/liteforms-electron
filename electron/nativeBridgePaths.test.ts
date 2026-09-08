@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import { getNativeBridgeLibraryName, getNativeBridgePlatformDir, resolveNativeBridgeRuntime } from "./nativeBridgePaths";
 
 describe("native Bridge path resolution", () => {
-  it("maps supported Windows and macOS platforms", () => {
+  it("maps supported Windows, macOS and Linux platforms", () => {
     expect(getNativeBridgePlatformDir("win32", "x64")).toBe("win32-x64");
     expect(getNativeBridgePlatformDir("darwin", "x64")).toBe("darwin-x64");
     expect(getNativeBridgePlatformDir("darwin", "arm64")).toBe("darwin-arm64");
+    expect(getNativeBridgePlatformDir("linux", "x64")).toBe("linux-x64");
     expect(getNativeBridgeLibraryName("win32")).toBe("bridge_inproc.dll");
     expect(getNativeBridgeLibraryName("darwin")).toBe("libbridge_inproc.dylib");
+    expect(getNativeBridgeLibraryName("linux")).toBe("libbridge_inproc.so");
   });
 
   it("resolves the development native Bridge directory", () => {
@@ -68,7 +70,7 @@ describe("native Bridge path resolution", () => {
     });
   });
 
-  it("does not advertise Linux support yet", () => {
+  it("resolves the Linux runtime against the bundled Bridge SDK .so", () => {
     expect(
       resolveNativeBridgeRuntime({
         appPath: "/repo",
@@ -79,8 +81,12 @@ describe("native Bridge path resolution", () => {
         resourcesPath: "/repo"
       })
     ).toEqual({
-      supported: false,
-      reason: "Native Looking Glass Bridge is not configured for linux/x64."
+      supported: true,
+      platformDir: "linux-x64",
+      runtimeDir: "/repo/native/bridge/linux-x64",
+      libraryPath: "/repo/native/bridge/linux-x64/libbridge_inproc.so",
+      libraryName: "libbridge_inproc.so",
+      source: "bundled"
     });
   });
 });

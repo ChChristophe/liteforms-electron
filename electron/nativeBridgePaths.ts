@@ -27,12 +27,14 @@ export function getNativeBridgePlatformDir(platform: NodeJS.Platform, arch: stri
   if (platform === "win32" && arch === "x64") return "win32-x64";
   if (platform === "darwin" && arch === "x64") return "darwin-x64";
   if (platform === "darwin" && arch === "arm64") return "darwin-arm64";
+  if (platform === "linux" && arch === "x64") return "linux-x64";
   return undefined;
 }
 
 export function getNativeBridgeLibraryName(platform: NodeJS.Platform) {
   if (platform === "win32") return "bridge_inproc.dll";
   if (platform === "darwin") return "libbridge_inproc.dylib";
+  if (platform === "linux") return "libbridge_inproc.so";
   return undefined;
 }
 
