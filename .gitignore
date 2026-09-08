@@ -43,3 +43,4 @@ next-env.d.ts
 # ai stuff
 /.claude
 /.cursor
+/.opencode/node_modules
