@@ -86,6 +86,9 @@ declare global {
       getDriverStatus(): Promise<LiteformsNativeBridgeDriverStatus>;
       getState(): Promise<LiteformsNativeBridgeState>;
     };
+    diagnostic: {
+      log(line: string): Promise<unknown>;
+    };
   };
 
   interface Window {

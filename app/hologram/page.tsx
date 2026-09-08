@@ -21,6 +21,11 @@ let liveLoopStarted = false;
 let liveAnimationFrame: number | null = null;
 let nextLiveTime = 0;
 
+// Transfer buffers come from the opener window via postMessage; reject absurd
+// sizes instead of allocating them (a same-origin guard, not hostile input).
+const maxModelBytes = 200 * 1024 * 1024;
+const maxAudioBytes = 20 * 1024 * 1024;
+
 function getSharedAudioContext(): AudioContext {
   if (sharedAudioContext) return sharedAudioContext;
   const Ctor = window.AudioContext ?? (window as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -94,6 +99,7 @@ export default function HologramPage() {
         case "utter-bytes": {
           if (
             !(data.bytes instanceof ArrayBuffer)
+            || data.bytes.byteLength > maxAudioBytes
             || !data.utt
             || typeof data.utt !== "object"
             || typeof data.utt.mimeType !== "string"
@@ -118,7 +124,7 @@ export default function HologramPage() {
           break;
         }
         case "live-audio": {
-          if (!(data.bytes instanceof ArrayBuffer)) return;
+          if (!(data.bytes instanceof ArrayBuffer) || data.bytes.byteLength > maxAudioBytes) return;
           liveChainRef.current = liveChainRef.current.then(async () => {
             try {
               const context = getSharedAudioContext();
@@ -152,7 +158,7 @@ export default function HologramPage() {
           if (typeof data.url === "string" && data.url) setModelUrl(data.url);
           break;
         case "model-bytes": {
-          if (!(data.bytes instanceof ArrayBuffer)) return;
+          if (!(data.bytes instanceof ArrayBuffer) || data.bytes.byteLength > maxModelBytes) return;
           const blob = new Blob([data.bytes]);
           const nextUrl = URL.createObjectURL(blob);
           if (modelObjectUrlRef.current) URL.revokeObjectURL(modelObjectUrlRef.current);

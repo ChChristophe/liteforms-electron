@@ -58,8 +58,14 @@ async function afterPack(context) {
   const from = join(process.cwd(), ".next", "standalone");
   const to = join(resourcesDir, "next", "standalone");
 
+  // Fail loudly instead of producing an installer that cannot start: the
+  // packaged app throws at launch when resources/next/standalone/server.js is
+  // missing (see electron/main.ts startPackagedNextServer).
   if (!existsSync(from)) {
-    return;
+    throw new Error("Missing .next/standalone build. Run `npm run build:electron` before packaging.");
+  }
+  if (!existsSync(join(from, "server.js"))) {
+    throw new Error(".next/standalone/server.js is missing; rebuild with `npm run build:electron`.");
   }
 
   console.log(`[electron] Copying Next standalone to ${to}`);
@@ -118,5 +124,10 @@ module.exports = {
     hardenedRuntime: true,
     gatekeeperAssess: false,
     notarize: false
+  },
+  linux: {
+    target: ["AppImage"],
+    category: "AudioVideo",
+    icon: "resources/icon-256.png"
   }
 };

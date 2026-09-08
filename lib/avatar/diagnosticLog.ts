@@ -1,5 +1,3 @@
-type DiagnosticBridge = { log?: (line: string) => Promise<unknown> };
-
 export function logDiagnostic(line: string): void {
   if (typeof window === "undefined") return;
   // Mirror every renderer log through console.error-capture as well: the main
@@ -11,7 +9,9 @@ export function logDiagnostic(line: string): void {
   } catch {
     /* ignore */
   }
-  const bridge = (window as { liteformsElectron?: DiagnosticBridge }).liteformsElectron;
-  if (!bridge?.log) return;
-  void bridge.log(line);
+  const bridge = window.liteformsElectron;
+  if (!bridge?.diagnostic) return;
+  void bridge.diagnostic.log(line).catch(() => {
+    /* ignore */
+  });
 }

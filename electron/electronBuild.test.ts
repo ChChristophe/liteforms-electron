@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createForwardedShellEnv, createNextServerEnv, resolveStandaloneDir } from "./nextServer";
@@ -268,5 +270,21 @@ describe("Electron build configuration", () => {
         resourcesPath: "C:\\repo\\liteforms-web"
       })
     ).toBe("C:\\repo\\liteforms-web\\.next\\standalone");
+  });
+
+  it("fails afterPack loudly when the Next standalone build is missing", async () => {
+    clearAzureTrustedSigningEnv();
+    const builderConfig = readBuilderConfig();
+    const scratchDir = mkdtempSync(join(tmpdir(), "liteforms-afterpack-"));
+    const originalCwd = process.cwd();
+    process.chdir(scratchDir);
+    try {
+      await expect(
+        builderConfig.afterPack({ appOutDir: join(scratchDir, "win-unpacked") })
+      ).rejects.toThrow(/Missing \.next\/standalone/i);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(scratchDir, { recursive: true, force: true });
+    }
   });
 });

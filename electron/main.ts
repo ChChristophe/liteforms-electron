@@ -1,8 +1,9 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, powerSaveBlocker, screen, shell, Tray } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerNativeBridgeIpc } from "./nativeBridge";
+import { redactDiagnosticLine } from "./diagnosticRedact";
 import { createNextServerEnv, getAvailablePort, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
 import { hologramWindowBrowserOptions, isExternalUrl, isHologramWindowOpenRequest, resolveWindowOpenRequest } from "./windowOpenPolicy";
 
@@ -15,6 +16,9 @@ let nextServerProcess: ChildProcess | null = null;
 let appUrl: string | null = null;
 let lastWindowBounds: Electron.Rectangle | null = null;
 let windowHiddenForBackground = false;
+let powerSaveBlockerId: number | null = null;
+const wiredDiagnosticsWindows = new WeakSet<BrowserWindow>();
+const maxDiagnosticLogBytes = 5 * 1024 * 1024;
 const nativeBridgeService = registerNativeBridgeIpc(ipcMain);
 
 function diagnosticLogPath(): string {
@@ -27,8 +31,19 @@ function diagnosticLogPath(): string {
 
 function writeDiagnostic(line: string): void {
   try {
+    const path = diagnosticLogPath();
+    // Bound the log: rotate to <path>.old instead of growing without limit on
+    // long-lived appliance installs.
+    try {
+      if (statSync(path).size > maxDiagnosticLogBytes) {
+        rmSync(`${path}.old`, { force: true });
+        renameSync(path, `${path}.old`);
+      }
+    } catch {
+      // First write or stat unavailable: just append.
+    }
     const stamp = new Date().toISOString();
-    appendFileSync(diagnosticLogPath(), `[${stamp}] ${line}\n`, "utf8");
+    appendFileSync(path, `[${stamp}] ${redactDiagnosticLine(line)}\n`, "utf8");
   } catch (err) {
     // never let a diagnostic write break the app; surface the failure path once
     try {
@@ -313,6 +328,11 @@ function createWindow(url: string) {
 }
 
 function wireWebContentsDiagnostics(win: BrowserWindow, label: string) {
+  // The main window is wired directly in createWindow AND surfaces here through
+  // browser-window-created; without this guard every listener/log would be
+  // installed twice.
+  if (wiredDiagnosticsWindows.has(win)) return;
+  wiredDiagnosticsWindows.add(win);
   // For the /hologram child window, sample the DOM geometry every ~1.5s so a
   // misplaced quilt canvas / collapsed container is visible in the diagnostic
   // log (this is how the "black background + white left border" was diagnosed).
@@ -478,7 +498,7 @@ app.whenReady().then(async () => {
 
   // Prevent the OS from suspending the app while the hologram is animating, so
   // the animation keeps refreshing even if the window is in the background.
-  powerSaveBlocker.start("prevent-app-suspension");
+  powerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension");
 
   Menu.setApplicationMenu(null);
 
@@ -504,6 +524,10 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
+  if (powerSaveBlockerId !== null) {
+    powerSaveBlocker.stop(powerSaveBlockerId);
+    powerSaveBlockerId = null;
+  }
   stopNextServer();
   nativeBridgeService.dispose();
 });

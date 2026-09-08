@@ -16,6 +16,7 @@ function makeElectronApi() {
     platform: "win32" as const,
     versions: { chrome: "1", electron: "1", node: "1" },
     lookingGlassBridge: { getDriverStatus, getState },
+    diagnostic: { log: vi.fn() },
   };
 }
 
