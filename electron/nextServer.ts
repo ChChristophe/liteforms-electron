@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 export type EnvMap = Record<string, string | undefined>;
 type NextServerEnv = Record<string, string> & {
   ELECTRON_RUN_AS_NODE: "1";
-  HOSTNAME: "127.0.0.1";
+  HOSTNAME: string;
   NEXT_TELEMETRY_DISABLED: "1";
   NODE_ENV: "production";
   PORT: string;
@@ -60,15 +60,23 @@ export function createForwardedShellEnv(baseEnv: EnvMap = process.env) {
   return env;
 }
 
-export function createNextServerEnv({ baseEnv = process.env, port }: { baseEnv?: EnvMap; port: number }): NextServerEnv {
+export function createNextServerEnv({ baseEnv = process.env, port, host = resolveServerHost(baseEnv) }: { baseEnv?: EnvMap; port: number; host?: string }): NextServerEnv {
   return {
     ...createForwardedShellEnv(baseEnv),
     ELECTRON_RUN_AS_NODE: "1",
-    HOSTNAME: "127.0.0.1",
+    HOSTNAME: host,
     NEXT_TELEMETRY_DISABLED: "1",
     NODE_ENV: "production",
     PORT: String(port)
   };
+}
+
+// Renderer keeps loading 127.0.0.1 (loopback always answers a 0.0.0.0/LAN bind),
+// so the Chromium origin — and with it browser storage — stays unchanged.
+// Binding wide is an explicit opt-in for the mobile POC; never the default.
+export function resolveServerHost(baseEnv: EnvMap = process.env): string {
+  const declared = baseEnv.LITEFORMS_SERVER_HOST;
+  return declared === "0.0.0.0" || declared === "::" ? declared : "127.0.0.1";
 }
 
 // Fixed port: Chromium keys localStorage/IndexedDB per origin (host + port), so

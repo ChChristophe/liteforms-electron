@@ -4,7 +4,7 @@ import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, statSync, wr
 import { join } from "node:path";
 import { registerNativeBridgeIpc } from "./nativeBridge";
 import { redactDiagnosticLine } from "./diagnosticRedact";
-import { createNextServerEnv, isHttpServerUp, LITEFORMS_SERVER_PORT, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
+import { createNextServerEnv, isHttpServerUp, LITEFORMS_SERVER_PORT, resolveServerHost, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
 import { hologramWindowBrowserOptions, isExternalUrl, isHologramWindowOpenRequest, resolveWindowOpenRequest } from "./windowOpenPolicy";
 
 const diagnosticLogChannel = "liteforms:diagnostic:log";
@@ -102,6 +102,7 @@ async function startPackagedNextServer() {
   }
 
   const port = LITEFORMS_SERVER_PORT;
+  const host = resolveServerHost();
   const url = `http://127.0.0.1:${port}`;
 
   if (await isHttpServerUp(url)) {
@@ -111,9 +112,19 @@ async function startPackagedNextServer() {
     return url;
   }
 
+  if (host === "127.0.0.1") {
+    writeDiagnostic("[next] LAN bind: off (loopback only)");
+  } else {
+    writeDiagnostic(`[next] LAN bind: ${host}:${port} (mobile POC)`);
+  }
+
   const child = spawn(process.execPath, [serverPath], {
     cwd: standaloneDir,
-    env: createNextServerEnv({ port }),
+    env: {
+      ...createNextServerEnv({ port, host }),
+      // Channel for the Next routes' [poc] tracing into the diagnostic log.
+      LITEFORMS_DIAGNOSTIC_LOG: diagnosticLogPath()
+    },
     stdio: ["ignore", "pipe", "pipe"]
   });
   nextServerProcess = child;
@@ -125,12 +136,14 @@ async function startPackagedNextServer() {
     console.error(`[next] ${chunk.toString().trim()}`);
   });
   child.on("exit", (code, signal) => {
+    writeDiagnostic(`[next] server exit code=${code ?? "null"} signal=${signal ?? "null"}`);
     if (code !== 0 && signal !== "SIGTERM") {
       console.error(`Packaged Next server exited with code ${code ?? "null"} and signal ${signal ?? "null"}.`);
     }
   });
 
   await waitForHttpServer(url);
+  writeDiagnostic(`[next] server ready on ${url} (bind host=${host} port=${port})`);
   return url;
 }
 

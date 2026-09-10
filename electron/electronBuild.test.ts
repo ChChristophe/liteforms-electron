@@ -57,6 +57,25 @@ describe("isHttpServerUp", () => {
   });
 });
 
+describe("isHttpServerUp", () => {
+  it("detects a live local server", async () => {
+    const http = await import("node:http");
+    const server = http.createServer((_req, res) => {
+      res.end("liteforms");
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      expect(await isHttpServerUp(`http://127.0.0.1:${port}`)).toBe(true);
+      expect(await isHttpServerUp(`http://127.0.0.1:${port + 1}`)).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+});
+
 describe("Electron build configuration", () => {
   afterEach(() => {
     delete process.env.LITEFORMS_ELECTRON_BUILD;
@@ -254,6 +273,16 @@ describe("Electron build configuration", () => {
     );
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.LITEFORMS_LLM_OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("binds the Next server wide only through the explicit LAN opt-in", () => {
+    expect(resolveServerHost({})).toBe("127.0.0.1");
+    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "127.0.0.1" })).toBe("127.0.0.1");
+    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "0.0.0.0" })).toBe("0.0.0.0");
+    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "192.168.1.5" })).toBe("127.0.0.1");
+
+    const lanEnv = createNextServerEnv({ baseEnv: { LITEFORMS_SERVER_HOST: "0.0.0.0" }, port: 43178 });
+    expect(lanEnv.HOSTNAME).toBe("0.0.0.0");
   });
 
   it("uses a shared child-process env allowlist for native helpers", () => {
