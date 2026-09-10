@@ -167,24 +167,31 @@ Fichiers des commits comparés entre l'arbre Electron actuel, la base commune `7
 1. **Source de vérité = le téléphone.** L'UI desktop n'est pas éditée (POC).
 2. **Live sans reboot** : chaque changement est appliqué immédiatement par l'app (voir §4).
 3. **VRM** : le fichier `.vrm` reste **sur la machine** (déjà en IndexedDB) ; le téléphone envoie seulement le **choix du modèle** (nom/référence), pas un upload.
-4. **Sécurité minimale au POC** : un token d'appairage suffit ; durcissement plus tard (voir §6.3/§8, phase 4).
+4. ~~**Sécurité minimale au POC** : un token d'appairage suffit~~ **[MISE À JOUR 10/09 — contrat mobile v1 verrouillé]** : la v1 délibérée avec le Mobile est **sans token** (LAN local de confiance) ; appairage (device/token) repoussé à la phase 4. Voir §4.4.
 
 ### 3.2 Parcours utilisateur cible (appliance)
 
 ```
 1. Brancher le Mini-PC → ON        (Electron démarre en auto-start)
-2. Electron crée le hotspot JARVIS-XXXX   (mode provisioning, 1er boot)
-3. L'app mobile détecte JARVIS-XXXX → [Connecter]
-4. L'app demande le Wi-Fi maison (SSID + mot de passe) → POST à Electron
+2. Electron crée le hotspot `Liteforms-Setup-XXXX`  (mode provisioning, 1er boot ;
+   **contrat v1 : SSID `Liteforms-Setup-XXXX`, service sur `192.168.4.1:8080`** —
+   et l'appliance n'affiche **aucun** code/QR/écran de configuration, §4.4)
+3. Le mobile rejoint le hotspot via les réglages WiFi système (iOS :
+   instruction + ouverture des réglages, pas de sélection programmatique)
+4. L'app mobile demande le Wi-Fi maison (SSID + mot de passe) → POST à Electron
 5. Electron configure NetworkManager (Linux) → le Mini-PC rejoint le Wi-Fi
    maison, abandonne son hotspot
 6. Le téléphone rejoint le même Wi-Fi → communication LAN normale
+   (découverte par **IP manuelle d'abord, mDNS ensuite**)
 + Sécurité d'association pendant le provisioning :
    mini PC génère DEVICE_ID + PAIRING_SECRET ; Electron garde la liste
    (Device, Paired-Phone, Token) ; toute écriture config exige le token.
+   **[contrat v1 10/09 : pas de token au provisioning ni sur device-config ;
+   cette association device/token est REPORTÉE phase 4]**
 ```
 
-> **Décision de phasage** : au POC, le provisioning manuel (IP + code à 6 chiffres affiché à l'écran) remplace les étapes 2-5. Le hotspot n'arrive qu'en phase 3.
+> ⚠️ Ancien texte de phasage (obsolète depuis le contrat mobile 10/09, conservé pour trace) : au POC, le provisioning manuel (IP + code à 6 chiffres affiché à l'écran) remplace les étapes 2-5. Le hotspot n'arrive qu'en phase 3.
+> **Le contrat contracte le hotspot dès le flux initial** (étape 2 des priorités Electron) — et le code/QR à l'écran est désormais **interdit** (l'appliance n'affiche rien, §4.4).
 
 ---
 
@@ -217,11 +224,111 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 | (futur) wake word | `wakeWordSettingsStore` partagée | idem |
 
 - **Micro-extension** nécessaire : méthode `list()`/`loadByName()` dans `indexedDbVrmRepository` (aujourd'hui `load()` seul).
-- **Credentials** : le téléphone les envoie pour configurer ; on ne les renvoie jamais sur le réseau (voir sécurité §6.3).
+- ~~**Credentials** : le téléphone les envoie pour configurer~~ **[Corrigé par le contrat v1, §4.4]** : le Mobile ne pousse **pas** de credentials provider (payload sans champ `credential`) ; les secrets restent saisis *sur* le desktop. On ne les renvoie jamais sur le réseau (§6.3), `GET /api/provider-status` expose uniquement des statuts masqués.
 
 ### 4.3 Récepteur côté app
 
 - L'écoute réseau : le serveur Next écoute sur `127.0.0.1` aujourd'hui → à binder sur la carte LAN (`0.0.0.0`/IP locale). Conséquence Windows : **pop-up pare-feu à accepter** au 1er run (réseau privé). Sur Linux : mêmes questions.
+- **Port du service de provisioning (contrat v1, résolu)** : défaut **`8080`**, **paramètre de configuration** de l'Electron (pas du Mobile) — lier 80/443 exige des privilèges admin, inacceptable pour une app Desktop utilisateur ; le port effectif est annoncé dans la réponse de `GET /api/provisioning/health` (champ `port`) puis via mDNS (plus tard).
+
+### 4.4 Contrat LAN Mobile ↔ Electron — **verrouillé v1, app mobile prête** (10/09/2026)
+
+Source de vérité : `C:\dev\Liteforms-Mobile-Application\docs\contract\` (README + JSON d'exemples, repris verbatim ci-dessous). L'application mobile est **déjà implémentée et terminée** ; tout le travail restant est **côté Electron**.
+
+**Contrainde produit** : l'appliance n'affiche **que** l'avatar — aucun code, QR, menu ou écran de configuration (ce qui invalide le vieux POC « IP + code à 6 chiffres affiché à l'écran »).
+
+**Flux complet** :
+
+```text
+Electron démarre
+  -> crée le hotspot Liteforms-Setup-XXXX
+  -> écoute 192.168.4.1:8080
+
+Mobile
+  -> rejoint le hotspot via les réglages WiFi système
+  -> GET  /api/provisioning/health
+  -> POST /api/provisioning/wifi
+
+Electron
+  -> stocke le WiFi cible dans son stockage local sécurisé
+  -> arrête le hotspot temporaire
+  -> rejoint le WiFi cible
+
+Mobile
+  -> retrouve Electron sur le LAN (IP manuelle d'abord, mDNS ensuite)
+  -> GET  /api/health
+  -> POST /api/device-config
+```
+
+**Routes** (auth v1 = **aucune**, LAN local traité comme réseau de confiance) :
+
+| Route | Méthode | Usage | Réponse |
+|---|---|---|---|
+| `/api/provisioning/health` | GET | vérifier le hotspot Liteforms | `{ok, mode:"provisioning", deviceId:"desktop-8f31", name:"Liteforms Desktop", protocolVersion:"1.0", port:8080}` — l'Electron **annonce son port effectif** ici |
+| `/api/provisioning/wifi` | POST | envoyer SSID/mot de passe du WiFi cible | 202 `{ok:true, restartRequired:true, message:"WiFi configuration accepted"}` ; 400 `{ok:false, code:"INVALID_WIFI_CONFIG", message}` |
+| `/api/health` | GET | vérifier Electron sur le réseau normal | `{ok, name, protocolVersion, configVersions:["1.0"], networkMode:"ethernet"\|"wifi"\|"provisioning"}` |
+| `/api/device-config` | POST | envoyer la configuration ordinaire | 200 `{ok, configVersion, appliedAt, warnings:[]}` ; erreurs `{ok:false, code, message}` codes min `INVALID_FIELD`, `UNSUPPORTED_CONFIG_VERSION`, `MODEL_REF_UNKNOWN` |
+| `/api/provider-status` | GET | lire des statuts **masqués** | `{ok, providers:{llm,tts,stt: {provider, configured, maskedKey}}}` — `maskedKey` jamais une clé réelle |
+
+**Règles transverses** : requêtes idempotentes ; champs inconnus ignorés ; le mot de passe WiFi n'apparaît jamais dans réponses/logs/erreurs ; la route de provisioning n'est active **que** en mode hotspot puis fermée ; le mobile n'envoie pas de config Avatar tant que `/api/health` renvoie `networkMode:"provisioning"` ; sur iOS le mobile ne promet pas de connexion WiFi automatique.
+
+**Règles credentials (contrat v1, section « Regles credentials » du README distant)** :
+
+- **Le Mobile est l'ÉMETTEUR** de toutes les données vers le Desktop — config ordinaire (`device-config`) et credentials WiFi (`provisioning/wifi`, envoi **unique** sur le hotspot isolé). Le Desktop ne décide jamais de la config : il la **reçoit et l'applique**.
+- `device-config` ne transporte **aucun secret** : ni clé provider, ni token de pairing, ni mot de passe WiFi.
+- Le mécanisme de stockage des credentials WiFi (trousse OS, fichier chiffré…) est un **détail d'implémentation** de l'Electron ; l'exigence de contrat est : jamais dans les logs, les réponses des autres routes, ou un message d'erreur.
+- Les **clés API providers vivent côté Electron**. Si un jour l'utilisateur les saisit depuis le Mobile (décision **D1**, phase 8), elles passent par une route **dédiée one-shot** `POST /api/credentials` — jamais via `device-config`.
+- `/api/provider-status` ne contient que `configured` et `maskedKey` (`sk-****`) — jamais une clé réelle.
+
+**Corps de `POST /api/device-config`** (exact, v1) :
+
+```json
+{
+  "configVersion": "1.0",
+  "character": { "name", "pronouns": "HE"|"SHE"|"THEY", "personality", "greeting" },
+  "avatar": {
+    "mood": "happy",
+    "modelRef": { "id": "lobsterEdit", "fileName": "lobsterEdit.vrm", "hash": null },
+    "pose":    { "avatarYaw": 0, "alcoveYaw": 0, "zoom": 1, "depth": 0 }
+  },
+  "environment": { "alcoveColor": "#4a90d9" },
+  "providers": {
+    "llm": { "provider", "model", "endpoint", "voiceId": null },
+    "tts": { "provider", "model", "endpoint", "voiceId" },
+    "stt": { "provider", "model", "endpoint", "voiceId": null }
+  }
+}
+```
+
+**Mapping vers l'existant (apply live, §4.2)** :
+
+| Champ contrat | Côté Electron | Note |
+|---|---|---|
+| `character.*` | `setCharacter` + `saveCharacterConfig` | identique |
+| `environment.alcoveColor` | `setAlcoveColor` | identique |
+| `avatar.modelRef` | lookup IndexedDB par `fileName` (`list()`/`loadByName()` manquants, §8) | `hash` peut être `null` → le desktop ne doit pas l'exiger pour valider |
+| `avatar.mood` | mood controller (port commit 9 §2.2, pas encore porté) | dépendance au port #9 |
+| `avatar.pose` (avatarYaw/alcoveYaw/zoom/depth) | retunes alal/hips + viewport (ports 6/7) + `environmentLoader` | **nouveau champ sans équivalent storage actuel** |
+| `providers.{llm,tts,stt}` | `SessionConfig` (`saveSessionConfig`) + remontage ChatPanel (`chatPanelKey`) | **`stt` ≈ `asr` côté Electron** (renommage au mapping) ; **pas de champ `credential`** dans le payload |
+
+**Ce qui change vs le plan initial** (deltas à retenir) :
+
+1. **Pas de token en v1** : ni sur `device-config` ni sur le provisioning. Le « token minimal » du POC (§5 Phase 2, §6.3) est reporté phase 4. Contrat assumé : LAN de confiance.
+2. **Pas de credentials dans le payload** : le téléphone ne pousse *que* la config ordinatoire (`providers` sans clé API) — cohérent avec « secrets au desktop, jamais sur le téléphone ». L'ancienne ligne §4.2 « Credentials : le téléphone les envoie pour configurer » est **corrigée par ce contrat**.
+3. **Provisioning hotspot dès le flux initial** (pas phase 3) : SSID `Liteforms-Setup-XXXX` (ex `JARVIS-XXXX`), service sur `192.168.4.1:8080`.
+4. **Pas de QR ni de code affiché à l'écran** — l'appliance n'affiche rien.
+5. `GET /api/provider-status` remplace `GET /api/device-config` (lecture) ; `configVersions:["1.0"]` présent dans `/api/health`.
+6. Nouveaux blocs de config auparavant non identifiés dans le plan : `avatar.mood`, `avatar.pose`, `voiceId` par provider, `stt` (vs `asr`).
+7. Router captive-portal : le contrat évite la page captive (réglages WiFi système depuis le mobile) — les sondes `/generate_204` sont donc **hors du chemin critique** (§6.6 reste valable comme robustesse).
+
+**Priorités Electron** (ordre du contrat, à reporter dans §8) :
+
+1. Créer le hotspot temporaire `Liteforms-Setup-XXXX` et écouter `192.168.4.1:8080` ;
+2. `GET /api/provisioning/health` ;
+3. `POST /api/provisioning/wifi` + transition vers le WiFi cible ;
+4. Fermer le mode provisioning après configuration acceptée ;
+5. `GET /api/health` sur le réseau normal ;
+6. `POST /api/device-config` + `GET /api/provider-status`.
 
 ---
 
@@ -248,16 +355,17 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 **Critère de sortie** : qualité d'image/sync acceptable sur l'appareil.
 **Difficulté : 3–4/10 (configuration, plus un pari). Faisabilité : 9,5/10.**
 
-### Phase 2 — POC config téléphone → live
-**Objectif** : config maîtrisée depuis le téléphone, appliquée en direct, **sans hotspot**.
-**Livrables** :
-- route `POST /api/device-config` + **token minimal** (§4/§6.3) ;
-- `GET /api/device-config` (statut/lecture, bonus utile) ;
+### Phase 2 — POC config téléphone → live (⚠️ périmètre redéfini par le contrat mobile v1, §4.4)
+**Objectif** : config maîtrisée depuis le téléphone, appliquée en direct.
+**Livrables** (contrat v1 verrouillé — l'app mobile existe déjà, tout le reste est côté Electron) :
+- provisioning **hotspot** (`Liteforms-Setup-XXXX`, `192.168.4.1:8080`, `POST /api/provisioning/wifi` + transition WiFi — cf. §4.4, priorités 1–4) ;
+- route `POST /api/device-config` **sans token** (v1 LAN de confiance) ;
+- `GET /api/health` + `GET /api/provider-status` (statuts masqués) ;
 - watcher ou polling → événement IPC → `applyDeviceConfig()` ;
-- **app mobile (Expo/React Native)** : écrans config + preview 3D + saisie `IP` + `code d'appairage`.
-**Critère de sortie** : pousser `alcoveColor`, `character`, un provider LLM/TTS, un VRM depuis le téléphone → appliqués **à chaud** ; l'aperçu 3D montre le VRM + la couleur d'alcove en direct sur le téléphone.
+- app mobile : **déjà prête** (sélection WiFi via réglages système, IP manuelle puis mDNS).
+**Critère de sortie** : provisioning WiFi via hotspot puis pousser `character`, `alcoveColor`, provider LLM/TTS/stt, `mood`/`pose`, un `modelRef` depuis le téléphone → appliqués **à chaud**.
 **Difficulté côté Electron : 3–4/10. Faisabilité : 9–10/10.**
-**Difficulté côté mobile (avec preview 3D) : ~6/10. Faisabilité : 8–9/10.** (détails §6.9)
+~~Preview 3D sur le téléphone~~ : hors périmètre du contrat v1 (aucune exigence de preview dans `docs/contract` ; le mobile livré s'appuie sur `modelRef` + statuts).
 
 ### Phase 3 — Le confort appliance
 **Objectif** : l'expérience « on le branche, ça marche ».
@@ -291,8 +399,9 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 - Archive propre : règle **polkit** mini PC ou **service systemd** launcher que l'app pilote. Si bricolé → cassure en prod.
 - Windows (pour les tests locaux) : `netsh wlan` + pop-up pare-feu à accepter.
 
-### 6.3 Sécurité du POC (mini mais avec les limites à ne pas franchir)
-- **Token** = seul moyen d'écrire la config (pas d'endpoint ouvert).
+### 6.3 Sécurité du POC (⚠️ écarté pour la v1 par le contrat mobile, §4.4)
+- **Contrat v1 (10/09)** : **deux routes sans auth** (`/api/provisioning/wifi` côté hotspot isolé ; `/api/device-config` et `/api/provider-status` sur le LAN local de confiance). Le token d'appairage planifié ici devient **phase 4** (avec TLS local, rotation, owner/devices).
+- **Invariants qui restent de mise** dès la v1 : mot de passe WiFi jamais dans réponses/logs/erreurs ; storage WiFi **sécurisé** (`safeStorage`) ; provisioning fermé après usage ; `maskedKey` jamais une clé réelle.
 - **Credentials provider** (OpenClaw…) : acceptés une fois côté local, **jamais réémis** en clair sur le LAN.
 - Bound du service au **LAN** (pas d'exposition WAN), port dédié.
 - `fs.watch` sur `userData` OK (Windows) ; sinon polling 2 s.
@@ -374,17 +483,22 @@ Renderer ─fonction applyDeviceConfig()─▶ setters existants (rendu live)
 
 **Appliance / POC config**
 - [ ] **Prioritaire** : week-end Phase 1 — Bridge 2.6.3 sur Ubuntu 24.04 X11, bascule du probe natif → websocket JS, énumération DRM du LKG Go en USB-C, build AppImage/.deb sur Linux.
-- [ ] API `POST /api/device-config` + token minimal + `GET` de statut (§4).
-- [ ] `indexedDbVrmRepository` : `list()`/`loadByName()`.
+
+**Contrat mobile v1 (app mobile prête, §4.4, ordre du contrat)**
+- [ ] Hotspot temporaire `Liteforms-Setup-XXXX` + service provisioning sur `192.168.4.1:8080` (port = paramètre de config Electron, défaut 8080, annoncé dans `provisioning/health` — §4.3).
+- [ ] `GET /api/provisioning/health`.
+- [ ] `POST /api/provisioning/wifi` + stockage WiFi sécurisé (`safeStorage`) + transition vers le WiFi cible + fermeture du mode provisioning.
+- [ ] `GET /api/health` (réseau normal, `networkMode`, `configVersions`).
+- [ ] API `POST /api/device-config` (v1 sans token, idempotent, champs inconnus ignorés) + `GET /api/provider-status` (statuts masqués).
+- [ ] `indexedDbVrmRepository` : `list()`/`loadByName()` (le payload n'a que `fileName`/`id`, `hash` nullable).
 - [ ] `applyDeviceConfig()` (réutilise setters + remontage ChatPanel) + événement live (polling d'abord).
+- [ ] Port commit 9 (mood) et ports 6/7 (pose) nécessaires au champ `avatar.*` (mapping §4.4).
 - [ ] Serveur Next en écoute LAN + gestion pare-feu (test Windows puis Linux).
 
-**App mobile (Expo/React Native — projet séparé, ∼2–3 semaines d'agent)**
-- [ ] Scaffold Expo + navigation + écrans config (caractère, humeur, alcove, **picker d'animation**), validateurs `lib/storage` reproduits.
-- [ ] Upload VRM (document-picker + multipart) + choix par référence.
-- [ ] Client API typé + saisie IP/token (POC) puis découverte.
-- [ ] **Preview 3D** (`expo-gl` + three + noyau `lib/avatar` ; jeter la partie LKG/exec) — tester vite MToon/WebGL2 ; sinon snapshot live.
-- [ ] Permissions LAN (iOS/Android) + build `eas build -p android` (APK).
+**App mobile (Expo/React Native — ✅ PRÊTE, contrat `docs/contract` verrouillé, rien à faire côté mobile)** ce bloc devient un rappel de l'existant :
+- ✔️ Écrans config + provisioning (réglages WiFi système, iOS = instruction + ouverture réglages).
+- ✔️ Découverte : IP manuelle d'abord, mDNS ensuite.
+- ✍️ à arbitrer plus tard (hors contrat v1) : preview 3D (`expo-gl` + noyau `lib/avatar` — la question MToon/WebGL2 de §6.9 reste vraie si un jour on la veut).
 
 **Kiosque Linux (plus tard)**
 - [ ] Build AppImage/.deb sur Linux, autostart, mDNS, provisioning hotspot (nmcli + polkit), pairing complet, auto-update (Phases 3–4).

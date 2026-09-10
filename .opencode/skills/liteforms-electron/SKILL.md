@@ -100,24 +100,46 @@ Linux appliance support. X11 is required by the plan; Wayland is not supported.
 
 ## Mobile configuration boundary
 
-The mobile-to-Electron configuration API, LAN binding, pairing, mDNS, and live
-apply path are planned work, not current behavior. Do not write a mobile skill
-or UI that assumes `/api/device-config` already exists.
+The mobile app is **built and done** against contract v1, frozen in
+`C:\dev\Liteforms-Mobile-Application\docs\contract\` (README + JSON examples).
+The remaining work is Electron-side. Contract highlights:
+
+- hotspot `Liteforms-Setup-XXXX` on `192.168.4.1:8080` (port is an Electron
+  config parameter, default 8080, announced in the provisioning health
+  response);
+- credential rules: the **mobile is the emitter** of all data (config on
+  `device-config`, WiFi creds on `provisioning/wifi` only over the isolated
+  hotspot); `device-config` carries **no secrets ever** (no provider key, no
+  pairing token, no WiFi password); the secure-storage mechanism for WiFi
+  creds is an Electron implementation detail — the contract requirement is
+  that they never appear in logs, other routes' responses, or errors;
+  provider API keys **live on the Electron** (a future mobile-side entry is a
+  dedicated one-shot `POST /api/credentials`, "decision D1", never
+  `device-config`);
+- on the normal LAN: `GET /api/health` (`networkMode`), `POST /api/device-config`
+  (idempotent, unknown fields ignored, error codes `INVALID_FIELD`,
+  `UNSUPPORTED_CONFIG_VERSION`, `MODEL_REF_UNKNOWN`) and
+  `GET /api/provider-status` (masked stats only);
+- **v1 has no auth token** (LAN treated as trusted; pairing/token slips to the
+  security-hardening phase); **no provider credentials in the payload** —
+  the mobile never sends or holds API keys;
+- the appliance displays nothing: no QR code, no pairing screen.
+
+See `PLAN_DIRECTEUR.md` §4.4 for the full contract, mapping table and deltas.
+Do not invent token-auth or credential-transfer behavior for v1 — that is
+deliberately deferred, and the credential question is resolved in favor of
+"secrets stay on the desktop".
 
 When implementing that POC, keep the path explicit:
 
 ```text
-mobile -> authenticated Next route -> durable device config -> main/renderer -> existing setters
+mobile -> Next route -> durable device config -> main/renderer -> existing setters
 ```
 
-Bind a network endpoint only deliberately, keep it LAN-scoped, authenticate
-writes, version the payload, ignore unknown fields, and never return provider
-credentials over the network. Start with polling if that is the smallest safe
+Bind a network endpoint only deliberately, keep it LAN-scoped, version the
+payload, ignore unknown fields, and never return provider or WiFi credentials
+over the network. Start with polling if that is the smallest safe
 implementation; add push/IPC only when required.
-
-The two project plans currently disagree about whether provider credentials
-live on the phone or only on the desktop. Treat this as an unresolved security
-contract. Do not invent credential transfer behavior while it is unresolved.
 
 ## Storage and live configuration
 
