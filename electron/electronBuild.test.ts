@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createForwardedShellEnv, createNextServerEnv, resolveStandaloneDir } from "./nextServer";
+import { createForwardedShellEnv, createNextServerEnv, isHttpServerUp, resolveStandaloneDir } from "./nextServer";
 
 const require = createRequire(import.meta.url);
 
@@ -37,6 +37,25 @@ async function loadNextConfig(electronBuild?: string) {
 
   return (await import("../next.config")).default;
 }
+
+describe("isHttpServerUp", () => {
+  it("detects a live local server", async () => {
+    const http = await import("node:http");
+    const server = http.createServer((_req, res) => {
+      res.end("liteforms");
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      expect(await isHttpServerUp(`http://127.0.0.1:${port}`)).toBe(true);
+      expect(await isHttpServerUp(`http://127.0.0.1:${port + 1}`)).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+});
 
 describe("Electron build configuration", () => {
   afterEach(() => {

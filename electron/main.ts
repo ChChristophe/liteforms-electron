@@ -4,7 +4,7 @@ import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, statSync, wr
 import { join } from "node:path";
 import { registerNativeBridgeIpc } from "./nativeBridge";
 import { redactDiagnosticLine } from "./diagnosticRedact";
-import { createNextServerEnv, getAvailablePort, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
+import { createNextServerEnv, isHttpServerUp, LITEFORMS_SERVER_PORT, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
 import { hologramWindowBrowserOptions, isExternalUrl, isHologramWindowOpenRequest, resolveWindowOpenRequest } from "./windowOpenPolicy";
 
 const diagnosticLogChannel = "liteforms:diagnostic:log";
@@ -101,8 +101,15 @@ async function startPackagedNextServer() {
     );
   }
 
-  const port = await getAvailablePort();
+  const port = LITEFORMS_SERVER_PORT;
   const url = `http://127.0.0.1:${port}`;
+
+  if (await isHttpServerUp(url)) {
+    // Already answering (orphan server from a crashed previous run, or a second
+    // app instance): reuse it. ponytail: trusts whatever answers on our fixed
+    // loopback port; add a response marker check if that becomes a concern.
+    return url;
+  }
 
   const child = spawn(process.execPath, [serverPath], {
     cwd: standaloneDir,

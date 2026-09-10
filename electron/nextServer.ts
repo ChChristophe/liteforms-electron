@@ -1,5 +1,4 @@
 import http from "node:http";
-import net from "node:net";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -72,23 +71,18 @@ export function createNextServerEnv({ baseEnv = process.env, port }: { baseEnv?:
   };
 }
 
-export async function getAvailablePort(hostname = "127.0.0.1") {
-  return await new Promise<number>((resolve, reject) => {
-    const server = net.createServer();
+// Fixed port: Chromium keys localStorage/IndexedDB per origin (host + port), so
+// a random port per launch made every restart start from empty storage (API
+// keys, session/character config, VRM were written but never read again).
+export const LITEFORMS_SERVER_PORT = 43178;
 
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, hostname, () => {
-      const address = server.address();
-      server.close(() => {
-        if (typeof address === "object" && address?.port) {
-          resolve(address.port);
-          return;
-        }
-        reject(new Error("Could not resolve an available local port for the Electron Next server."));
-      });
-    });
-  });
+export async function isHttpServerUp(url: string) {
+  try {
+    await probeHttpServer(url);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function waitForHttpServer(url: string, timeoutMs = 30000) {

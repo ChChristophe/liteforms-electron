@@ -1,7 +1,7 @@
 # PLAN DIRECTEUR — Liteforms, l'appliance à hologramme (Mini-PC + Looking Glass)
 
 > Document de travail unique, issu de l'échange complet. Il sert de **base de référence** pour toute la suite du projet.
-> Dernière mise à jour : 30/08/2026 — **enrichi** : support Linux du bridge vérifié (officiel), choix mobile **RN/Expo**, flux de fabrication (image dorée), estimations de portage mobile.
+> Dernière mise à jour : 10/09/2026 — **fix persistance des réglages packagés** (voir §1.6) ; support Linux du bridge vérifié (officiel), choix mobile **RN/Expo**, flux de fabrication (image dorée), estimations de portage mobile.
 
 ---
 
@@ -73,6 +73,42 @@ Ce document couvre l'ensemble, avec états, difficultés, risques, chiffres et p
 - nouveaux : `lib/storage/environmentConfig.ts`, `environmentConfig.test.ts` ;
 - modifiés : `environmentLoader.ts` (tint + snapshot matières/WeakMap), `environmentLoader.test.ts` (+4 tests), `AvatarScene.tsx` (prop `environmentTint`, refs, apply au chargement + cleanup + `useEffect`), `ChatPanel.tsx` (props/état/handlers + rangée « Alcove color » sous Load VRM, panneau Advanced), `app/page.tsx` (état + `loadEnvironmentConfig` + handler persisté + câblage props), `app/globals.css` (`.alcove-color-label`, `.advanced-hint`) ;
 - **`/hologram`** : la fenêtre holo lit `loadEnvironmentConfig()` au montage + écoute l'événement **`storage`** → le tint se met à jour **en direct** depuis la fenêtre principale (même origine `localStorage`, aucun IPC nécessaire) ; Reset → matières d'origine.
+
+### 1.6 Fix persistance des réglages en app packagée (10/09/2026)
+
+**Symptôme** : une clef API (ou toute autre réglage) saisie dans l'app packagée
+disparaissait après chaque redémarrage de l'app.
+
+**Cause racine** : le serveur Next embarqué écoutait sur un **port aléatoire**
+(`getAvailablePort()` → `listen(0)`) à chaque lancement (`electron/main.ts`),
+et la fenêtre chargeait `http://127.0.0.1:<port>` derrière. Chromium stocke
+`localStorage` + IndexedDB **par origine** (host + port), donc chaque lancement
+reprenait depuis une origine neuve et vide. Les données étaient bien écrites sur
+disque (`%APPDATA%\liteforms-web`), juste orphelinées sous l'origine des anciens
+ports — jamais relues. Sont concernés : clefs API (`liteforms.credentials`),
+config de session (`liteforms.sessionConfig`), personnage
+(`liteforms.characterConfig`), VRM (`liteforms` IndexedDB), via les sections
+correspondantes de §1.3.
+
+**Fix** (validé matériellement sous Windows le 10/09/2026) :
+
+- `electron/nextServer.ts` : port **fixe** `43178` (`LITEFORMS_SERVER_PORT`),
+  détection `isHttpServerUp(url)`, `getAvailablePort()` supprimée ;
+- `electron/main.ts` (`startPackagedNextServer`) : si quelque chose répond déjà
+  sur le port fixe (serveur orphelin d'un run crashé, ou seconde instance), on
+  le **réutilise** au lieu d'en lancer un second ;
+- test : le comportement de `isHttpServerUp` (serveur vivant détecté, port
+  mort refusé) dans `electron/electronBuild.test.ts`.
+
+**Limites connues** :
+- le chemin dev (`npm run dev:electron`, origin `http://localhost:3000`) n'a
+  jamais eu le bug (port fixe d'office) et garde son propre profil séparé ;
+- les données saisies avant le fix (sous d'anciens origines à ports aléatoires)
+  ne sont **pas** récupérées — à resaisir une fois ;
+- le port fixe doit rester libre pour l'app ; s'il est occupé par autre chose,
+  l'app réutilisera ce répondant (voir `ponytail:` dans `main.ts`).
+- si le run précédent a été tué durement, un serveur orphelin peut rester en
+  mémoire : le chemin « réutilisation » gère ce cas transparentement.
 
 ---
 
