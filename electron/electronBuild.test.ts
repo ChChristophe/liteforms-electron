@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createForwardedShellEnv, createNextServerEnv, isHttpServerUp, resolveStandaloneDir } from "./nextServer";
+import { createForwardedShellEnv, createNextServerEnv, isHttpServerUp, resolveServerHost, resolveStandaloneDir } from "./nextServer";
 
 const require = createRequire(import.meta.url);
 
@@ -37,25 +37,6 @@ async function loadNextConfig(electronBuild?: string) {
 
   return (await import("../next.config")).default;
 }
-
-describe("isHttpServerUp", () => {
-  it("detects a live local server", async () => {
-    const http = await import("node:http");
-    const server = http.createServer((_req, res) => {
-      res.end("liteforms");
-    });
-
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = (server.address() as { port: number }).port;
-
-    try {
-      expect(await isHttpServerUp(`http://127.0.0.1:${port}`)).toBe(true);
-      expect(await isHttpServerUp(`http://127.0.0.1:${port + 1}`)).toBe(false);
-    } finally {
-      server.close();
-    }
-  });
-});
 
 describe("isHttpServerUp", () => {
   it("detects a live local server", async () => {
@@ -301,6 +282,28 @@ describe("Electron build configuration", () => {
     );
     expect(env.OPENAI_API_KEY).toBeUndefined();
     expect(env.LITEFORMS_LLM_OPENAI_API_KEY).toBeUndefined();
+  });
+
+  it("forwards Linux display session variables to native helpers", () => {
+    const env = createForwardedShellEnv({
+      DISPLAY: ":0",
+      WAYLAND_DISPLAY: "wayland-0",
+      XAUTHORITY: "/home/liteforms/.Xauthority",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      XDG_SESSION_TYPE: "x11",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus"
+    });
+
+    expect(env).toEqual(
+      expect.objectContaining({
+        DISPLAY: ":0",
+        WAYLAND_DISPLAY: "wayland-0",
+        XAUTHORITY: "/home/liteforms/.Xauthority",
+        XDG_RUNTIME_DIR: "/run/user/1000",
+        XDG_SESSION_TYPE: "x11",
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus"
+      })
+    );
   });
 
   it("runs packaged Next from the real unpacked asar directory", () => {

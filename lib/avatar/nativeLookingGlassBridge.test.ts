@@ -92,6 +92,17 @@ describe("native Looking Glass Bridge helpers", () => {
     ).toBe(true);
   });
 
+  it("treats an available display without a serial as connected when dimensions are known", () => {
+    expect(
+      isNativeLookingGlassBridgeDisplayConnected({
+        available: true,
+        source: "native",
+        display: { id: "1", name: "Looking Glass 16\"", serial: "", width: 1536, height: 2560 },
+        calibration: { ...calibration, serial: "" },
+      })
+    ).toBe(true);
+  });
+
   it("does not treat a failed native Bridge probe as a connected display", () => {
     expect(
       isNativeLookingGlassBridgeDisplayConnected({

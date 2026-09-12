@@ -48,22 +48,62 @@ type NativeBridgeService = {
   dispose(): void;
 };
 
+type NativeBridgeLogger = (line: string) => void;
+
 const probeTimeoutMs = 7000;
 const cacheTtlMs = 2500;
 const nativeBridgeProbeResultFd = 3;
 const nativeBridgeProbeResultFdEnv = "LITEFORMS_NATIVE_BRIDGE_RESULT_FD";
+const maxStderrExcerptLength = 300;
 
-export function createNativeBridgeService(): NativeBridgeService {
+function singleLine(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
+function summarizeNativeBridgeState(state: NativeBridgeState): string {
+  if (!state.available) return `available=false error="${singleLine(state.error)}"`;
+
+  const display = state.display as {
+    name?: string;
+    serial?: string;
+    width?: number;
+    height?: number;
+    x?: number;
+    y?: number;
+  };
+  const viewControls = state.viewControls as
+    | { columns?: number; rows?: number; quiltResolution?: { width?: number; height?: number } }
+    | undefined;
+  const quilt = viewControls?.columns && viewControls?.rows
+    ? ` quilt=${viewControls.columns}x${viewControls.rows}`
+    : "";
+  return (
+    `available=true display="${display.name || "?"}" serial="${display.serial || "-"}" ` +
+    `${display.width ?? "?"}x${display.height ?? "?"} pos=${display.x ?? "?"},${display.y ?? "?"}${quilt}`
+  );
+}
+
+export function createNativeBridgeService(log?: NativeBridgeLogger): NativeBridgeService {
   let activeProbe: ChildProcess | undefined;
   let cachedState: { state: NativeBridgeState; createdAt: number } | undefined;
+  let lastLoggedStateKey: string | undefined;
+
+  const logState = (state: NativeBridgeState) => {
+    const key = summarizeNativeBridgeState(state);
+    if (key === lastLoggedStateKey) return;
+    lastLoggedStateKey = key;
+    log?.(`nativeBridge probe :: ${key}`);
+  };
 
   const getState = async (): Promise<NativeBridgeState> => {
     if (cachedState && Date.now() - cachedState.createdAt < cacheTtlMs) {
+      logState(cachedState.state);
       return cachedState.state;
     }
 
     const state = await probeNativeBridge();
     cachedState = { state, createdAt: Date.now() };
+    logState(state);
     return state;
   };
 
@@ -147,6 +187,7 @@ export function createNativeBridgeService(): NativeBridgeService {
         windowsHide: true
       });
       activeProbe = child;
+      log?.(`nativeBridge probe start :: ${resolved.libraryPath}`);
 
       let resultOutput = "";
       let stdout = "";
@@ -157,6 +198,7 @@ export function createNativeBridgeService(): NativeBridgeService {
         settled = true;
         activeProbe = undefined;
         child.kill();
+        log?.(`nativeBridge probe timed out after ${probeTimeoutMs}ms`);
         resolve({
           available: false,
           source: "native",
@@ -178,6 +220,7 @@ export function createNativeBridgeService(): NativeBridgeService {
         settled = true;
         activeProbe = undefined;
         clearTimeout(timeout);
+        log?.(`nativeBridge probe error :: ${error.message}`);
         resolve({
           available: false,
           source: "native",
@@ -192,11 +235,20 @@ export function createNativeBridgeService(): NativeBridgeService {
 
         const output = (resultOutput || stdout).trim();
         if (!output) {
-          const reason = stderr.trim() || `probe exited with code ${code ?? "null"} and signal ${signal ?? "null"}`;
+          const stderrExcerpt = singleLine(stderr).slice(0, maxStderrExcerptLength);
+          const reason = stderrExcerpt || `probe exited with code ${code ?? "null"} and signal ${signal ?? "null"}`;
+          log?.(`nativeBridge probe failed :: ${reason}`);
           resolve({
             available: false,
             source: "native",
-            error: `Native Bridge probe returned no data: ${reason}`
+            // A silent exit (code 0, no output) is how the in-process Bridge
+            // library reports an initialization failure (no reachable device,
+            // missing USB permission or missing system library). Surface what
+            // the library printed so the failure is diagnosable in the field.
+            error: `Native Bridge probe returned no data (${reason}).` +
+              (stderrExcerpt
+                ? ""
+                : " Check that the Looking Glass is connected over USB (not only HDMI), is USB-accessible (udev permissions) and that required system libraries are installed.")
           });
           return;
         }
@@ -204,6 +256,7 @@ export function createNativeBridgeService(): NativeBridgeService {
         try {
           resolve(JSON.parse(output) as NativeBridgeState);
         } catch {
+          log?.(`nativeBridge probe returned invalid JSON :: ${singleLine(output).slice(0, maxStderrExcerptLength)}`);
           resolve({
             available: false,
             source: "native",
@@ -257,8 +310,8 @@ function createNativeBridgeProbeEnv(resolved: SupportedNativeBridgeRuntime): Ele
   return env;
 }
 
-export function registerNativeBridgeIpc(ipcMain: IpcMain) {
-  const service = createNativeBridgeService();
+export function registerNativeBridgeIpc(ipcMain: IpcMain, log?: NativeBridgeLogger) {
+  const service = createNativeBridgeService(log);
   ipcMain.handle(nativeBridgeGetDriverStatusChannel, () => service.getDriverStatus());
   ipcMain.handle(nativeBridgeGetStateChannel, () => service.getState());
   return service;

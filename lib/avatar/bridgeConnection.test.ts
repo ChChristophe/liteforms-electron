@@ -64,4 +64,26 @@ describe("checkLookingGlassBridgeConnection", () => {
     expect(getNativeBridgeState).toHaveBeenCalledOnce();
     expect(status).toHaveBeenCalledOnce();
   });
+
+  it("reports the native probe error when neither the native driver nor Bridge.js connects", async () => {
+    const status = vi.fn().mockResolvedValue(false);
+    const nativeError = "No Looking Glass displays were reported by the native Bridge driver.";
+    const getNativeBridgeState = vi.fn().mockResolvedValue({
+      available: false,
+      source: "native",
+      error: nativeError,
+    });
+
+    await expect(getLookingGlassBridgeConnection({
+      getBridgeClient: () => ({ status }),
+      getNativeBridgeState,
+      hasNativeBridgeApi: () => true,
+    })).resolves.toEqual({
+      connected: false,
+      source: "none",
+      error: nativeError,
+    });
+
+    expect(status).toHaveBeenCalledOnce();
+  });
 });

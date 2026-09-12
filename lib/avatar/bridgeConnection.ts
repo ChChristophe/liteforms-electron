@@ -16,6 +16,8 @@ export type LookingGlassBridgeConnection = {
   connected: boolean;
   source: "native" | "bridge-js" | "none";
   display?: LookingGlassDisplayBounds;
+  /** Failure reason from the native probe (or Bridge.js when native is absent). */
+  error?: string;
 };
 
 type BridgeConnectionOptions = {
@@ -29,6 +31,8 @@ export async function getLookingGlassBridgeConnection({
   getNativeBridgeState = getNativeLookingGlassBridgeState,
   hasNativeBridgeApi = hasNativeLookingGlassBridgeApi,
 }: BridgeConnectionOptions = {}): Promise<LookingGlassBridgeConnection> {
+  let nativeError: string | undefined;
+
   if (hasNativeBridgeApi()) {
     try {
       const state = await getNativeBridgeState();
@@ -44,21 +48,37 @@ export async function getLookingGlassBridgeConnection({
           },
         };
       }
-    } catch {
+      if (!state.available) {
+        // Keep the reason visible: without it a failed native probe looks
+        // identical to "no Looking Glass Bridge app installed".
+        nativeError = state.error;
+      }
+    } catch (error) {
       // Bridge.js remains a valid fallback when the native probe is unavailable.
+      nativeError = error instanceof Error ? error.message : String(error);
     }
   }
 
   try {
     const connected = await getBridgeClient().status();
-    return {
-      connected,
-      source: connected ? "bridge-js" : "none",
-    };
-  } catch {
+    if (connected) {
+      return {
+        connected: true,
+        source: "bridge-js",
+      };
+    }
     return {
       connected: false,
       source: "none",
+      ...(nativeError ? { error: nativeError } : {}),
+    };
+  } catch (error) {
+    return {
+      connected: false,
+      source: "none",
+      ...(nativeError
+        ? { error: nativeError }
+        : { error: error instanceof Error ? error.message : String(error) }),
     };
   }
 }

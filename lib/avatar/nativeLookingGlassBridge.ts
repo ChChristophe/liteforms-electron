@@ -65,7 +65,10 @@ export async function getNativeLookingGlassBridgeDriverStatus(
 export function isNativeLookingGlassBridgeDisplayConnected(state: NativeLookingGlassBridgeState): boolean {
   if (!state.available) return false;
 
-  return Boolean((state.display.serial || state.calibration.serial).trim());
+  // A real device always yields dimensions; some platforms (notably the Linux
+  // bridge runtime) may not expose a serial. Require either, never both.
+  const hasDimensions = (state.display.width ?? 0) > 0 && (state.display.height ?? 0) > 0;
+  return Boolean((state.display.serial || state.calibration.serial).trim()) || hasDimensions;
 }
 
 export function applyNativeLookingGlassBridgeCalibration(

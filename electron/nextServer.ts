@@ -44,7 +44,15 @@ const FORWARDED_ENV_KEYS = [
   "WINDIR",
   "XDG_CACHE_HOME",
   "XDG_CONFIG_HOME",
-  "XDG_DATA_HOME"
+  "XDG_DATA_HOME",
+  // Display/session variables: the native Bridge library links GTK3/SDL/X11 and
+  // cannot run initialize_bridge in a child process without them on Linux.
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "XAUTHORITY",
+  "XDG_RUNTIME_DIR",
+  "XDG_SESSION_TYPE",
+  "DBUS_SESSION_BUS_ADDRESS"
 ];
 
 export function createForwardedShellEnv(baseEnv: EnvMap = process.env) {
