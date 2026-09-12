@@ -32,7 +32,7 @@ export function saveDeviceConfigFile(path: string, config: PocDeviceConfig, rece
     renameSync(`${path}.tmp`, path);
     return true;
   } catch {
-    pocLog("device-config file save failed (memory park kept as fallback)");
+    pocLog("device-config file save failed (keeping in-memory session state)");
     return false;
   }
 }

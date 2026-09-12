@@ -5,8 +5,9 @@ import { join } from "node:path";
 // where the user drops .vrm files by hand (no upload, no network catalog).
 // The Next server learns the folder through LITEFORMS_VRM_LIBRARY_DIR, set by
 // the Electron main process when it spawns the Next server.
-// Metadata only here: a .vrm binary NEVER goes into a JSON list �?" serving is
-// done by GET /api/poc/vrms/file with a strict name allowlist.
+// Metadata only here: a .vrm binary NEVER goes into a JSON list — serving is
+// done by GET /api/device/vrms/file (requalified from /api/poc, POC.md §13.5)
+// with a strict name allowlist.
 
 export const BUILTIN_VRM_FILE_NAME = "lobsterEdit.vrm";
 

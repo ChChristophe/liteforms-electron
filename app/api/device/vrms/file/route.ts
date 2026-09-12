@@ -7,12 +7,12 @@ import {
   isValidVrmFileName
 } from "@/lib/deviceConfig/vrmLibrary";
 
-// POC-only route (NOT part of contract v1): serves a .vrm binary from the
-// local library (<userData>/vrm-library/) or the built-in public/models copy.
-// SECURITY (trust boundary: the mobile may send any `name`): the name is
-// validated against a strict allowlist that forbids separators and traversal
-// (`/`, `\`, `..`); anything else -> 404. No secret payload, logs carry only
-// the file name and size (POC.md §5.2, §12 Phase C).
+// Device route (stable, requalified from the POC namespace): serves a .vrm
+// binary from the local library (<userData>/vrm-library/) or the built-in
+// public/models copy. SECURITY (trust boundary: the mobile may send any
+// `name`): the name is validated against a strict allowlist that forbids
+// separators and traversal (`/`, `\`, `..`); anything else -> 404. No secret
+// payload, logs carry only the file name and size (POC.md §5.2, §12 Phase C).
 export async function GET(request: Request) {
   const name = new URL(request.url).searchParams.get("name") ?? "";
   if (!isValidVrmFileName(name)) {

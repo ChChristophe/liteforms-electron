@@ -608,6 +608,18 @@ et le log diagnostique `%APPDATA%\liteforms-web\liteforms-diagnostic.log` :
   one-shot localStorage → fichier côté renderer, fallback park mémoire en
   dev sans env. Validé terrain (fichier présent et relu après restart).
   Détail : commit « Persist device-config durably in userData ».
+* ~~requalification des routes VRM~~ **FAIT (12/09/2026)** : les routes
+  bibliotheque VRM ne sont plus POC — `GET /api/device/vrms` et
+  `GET /api/device/vrms/file?name=` (meme comportement, nouveau prefixe
+  stable ; mise a jour Mobile side a faire par l'orchestrator).
+* ~~retrait du canal polling `/api/poc/pending-config`~~ **FAIT (12/09/2026)** :
+  remplace par `GET /api/device-config` (lecture durable du meme fichier,
+  `{ok, config, receivedAt}` ou `{ok, config:null}`), polling renderer ~2 s
+  conserve sur cette route contractuelle, dedoublonnage par `receivedAt`,
+  migration one-shot localStorage → fichier rebranchee sur le GET,
+  cle localStorage renommee `liteforms.poc.deviceConfig` →
+  `liteforms.deviceConfig` (lecture legacy one-shot), park mémoire
+  reduit a un fallback dev local a la route. Plus rien sous `/api/poc/`.
 * provisioning WiFi (`/api/provisioning/*`) — reste hors perimetre ;
 * detection automatique du token OpenClaw local (§7.1) ;
 * catalogue VRM en ligne alimentant `vrm-library/` ;

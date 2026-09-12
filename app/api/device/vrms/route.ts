@@ -8,9 +8,10 @@ import {
   type VrmLibraryEntry
 } from "@/lib/deviceConfig/vrmLibrary";
 
-// POC-only route (NOT part of contract v1): metadata of the local VRM library
-// (<userData>/vrm-library/) plus the built-in bundled VRM. Never a binary in
-// the list, never a secret; logs only counters (POC.md §5.2, §12 Phase C).
+// Device route (stable, requalified from the POC namespace): metadata of the
+// local VRM library (<userData>/vrm-library/) plus the built-in bundled VRM.
+// Never a binary in the list, never a secret; logs only counters
+// (POC.md §5.2, §12 Phase C, §13.5 point 2).
 export async function GET() {
   const dir = process.env.LITEFORMS_VRM_LIBRARY_DIR;
   const fromLibrary = dir ? listLibraryVrms(dir) : [];

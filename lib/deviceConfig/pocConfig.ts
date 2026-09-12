@@ -1,8 +1,8 @@
 // Contract Mobile<->Electron v1 — POST /api/device-config.
-// POC scope (POC.md §6): the payload is validated and parked in module memory;
-// the renderer picks it up via GET /api/poc/pending-config, stores it in its
-// own localStorage (liteforms.poc.deviceConfig) and applies the existing
-// setters. Nothing durable here yet — userData persistence comes later.
+// The payload is validated and stored durably (<userData>/config/
+// device-config.json, POC.md §13.6); the renderer picks it up via the stable
+// GET /api/device-config route, caches it in its own localStorage
+// (liteforms.deviceConfig) and applies the existing setters.
 // Secrets are rejected outright: the contract forbids provider keys, pairing
 // tokens and WiFi passwords in this payload.
 

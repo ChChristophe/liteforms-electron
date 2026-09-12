@@ -27,7 +27,7 @@ function writeVrm(fileName: string, bytes: number[]) {
   writeFileSync(join(libraryDir, fileName), new Uint8Array(bytes));
 }
 
-describe("GET /api/poc/vrms (Phase C list)", () => {
+describe("GET /api/device/vrms (Phase C list)", () => {
   it("lists the library *.vrm files with metadata only, plus the built-in VRM", async () => {
     writeVrm("myAvatar.vrm", [1, 2, 3, 4]);
     writeVrm("other.vrm", [5, 6]);
@@ -68,11 +68,11 @@ describe("GET /api/poc/vrms (Phase C list)", () => {
   });
 });
 
-describe("GET /api/poc/vrms/file (Phase C serving)", () => {
+describe("GET /api/device/vrms/file (Phase C serving)", () => {
   it("serves a library .vrm as octet-stream", async () => {
     writeVrm("myAvatar.vrm", [9, 8, 7]);
 
-    const response = await getFile(new Request("http://localhost/api/poc/vrms/file?name=myAvatar.vrm"));
+    const response = await getFile(new Request("http://localhost/api/device/vrms/file?name=myAvatar.vrm"));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/octet-stream");
@@ -81,7 +81,7 @@ describe("GET /api/poc/vrms/file (Phase C serving)", () => {
   });
 
   it("serves the built-in lobsterEdit.vrm from public/models", async () => {
-    const response = await getFile(new Request("http://localhost/api/poc/vrms/file?name=lobsterEdit.vrm"));
+    const response = await getFile(new Request("http://localhost/api/device/vrms/file?name=lobsterEdit.vrm"));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/octet-stream");
@@ -91,7 +91,7 @@ describe("GET /api/poc/vrms/file (Phase C serving)", () => {
   it.each(["../package.json", "with\\slash.vrm", "no/extension.vrm", "not-a-vrm", ".vrm"])(
     "refuses a traversal/invalid name: %s",
     async (name) => {
-      const response = await getFile(new Request(`http://localhost/api/poc/vrms/file?name=${encodeURIComponent(name)}`));
+      const response = await getFile(new Request(`http://localhost/api/device/vrms/file?name=${encodeURIComponent(name)}`));
 
       expect(response.status).toBe(404);
       expect(await response.json()).toMatchObject({ ok: false });
@@ -99,7 +99,7 @@ describe("GET /api/poc/vrms/file (Phase C serving)", () => {
   );
 
   it("returns 404 for a valid name that is not in the library", async () => {
-    const response = await getFile(new Request("http://localhost/api/poc/vrms/file?name=absent.vrm"));
+    const response = await getFile(new Request("http://localhost/api/device/vrms/file?name=absent.vrm"));
 
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ ok: false, code: "MR_FILE_NOT_FOUND" });

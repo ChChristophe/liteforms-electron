@@ -12,13 +12,18 @@ import type { AsrConfig, AsrProviderId, TtsConfig, TtsProviderId } from "@/lib/s
 import type { StoredVrm, VrmRepository } from "@/lib/storage/vrmRepository";
 import type { CharacterConfig } from "@/components/chat/ChatPanel";
 
-// POC Phase B — renderer apply (POC.md §12.2, §6.1). Polls the server-parked
-// payload, stores it under the dedicated POC localStorage key (never
-// liteforms.sessionConfig) and projects the validated blocks onto the existing
-// stores (character, environment, session providers, local VRM).
-// No secrets ever transit here: the server rejects them before parking.
+// POC Phase B — renderer apply (POC.md §12.2, §6.1). Polls the stable
+// GET /api/device-config route (the durable file IS the source of truth,
+// POC.md §13.6), stores it under the dedicated device-config localStorage key
+// (never liteforms.sessionConfig) and projects the validated blocks onto the
+// existing stores (character, environment, session providers, local VRM).
+// No secrets ever transit here: the server rejects them before storing.
 
-export const POC_DEVICE_CONFIG_KEY = "liteforms.poc.deviceConfig";
+// Renderer cache + dedup key. Renamed from liteforms.poc.deviceConfig when
+// the POC pending-config channel was retired (POC.md §13.5 point 3); the old
+// key stays readable once for upgrade, then is rewritten under the new name.
+export const DEVICE_CONFIG_STORAGE_KEY = "liteforms.deviceConfig";
+const LEGACY_DEVICE_CONFIG_STORAGE_KEY = "liteforms.poc.deviceConfig";
 
 const POC_POLL_INTERVAL_MS = 2000;
 
@@ -44,17 +49,27 @@ function pocRendererLog(message: string): void {
   logDiagnostic(`[poc] ${new Date().toISOString()} ${message}`);
 }
 
-function readPocKey(): string | null {
+function readConfigKey(): string | null {
   try {
-    return localStorage.getItem(POC_DEVICE_CONFIG_KEY);
+    const current = localStorage.getItem(DEVICE_CONFIG_STORAGE_KEY);
+    if (current !== null) return current;
+    // One-time legacy read: use the pre-rename cache and rewrite it under the
+    // new key (old entries are never re-imported once the new key exists).
+    const legacy = localStorage.getItem(LEGACY_DEVICE_CONFIG_STORAGE_KEY);
+    if (legacy !== null) {
+      localStorage.setItem(DEVICE_CONFIG_STORAGE_KEY, legacy);
+      localStorage.removeItem(LEGACY_DEVICE_CONFIG_STORAGE_KEY);
+      return legacy;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
-function writePocKey(value: string): boolean {
+function writeConfigKey(value: string): boolean {
   try {
-    localStorage.setItem(POC_DEVICE_CONFIG_KEY, value);
+    localStorage.setItem(DEVICE_CONFIG_STORAGE_KEY, value);
     return true;
   } catch {
     return false;
@@ -62,12 +77,12 @@ function writePocKey(value: string): boolean {
 }
 
 export function storeReceivedDeviceConfig(pending: PocReceivedDeviceConfig): void {
-  writePocKey(JSON.stringify(pending));
+  writeConfigKey(JSON.stringify(pending));
 }
 
 /** Reads back the stored payload; re-validates its content before use. */
 export function readStoredPocDeviceConfig(): PocReceivedDeviceConfig | null {
-  const raw = readPocKey();
+  const raw = readConfigKey();
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as { receivedAt?: unknown } & Record<string, unknown>;
@@ -143,11 +158,12 @@ export function mapPocProvidersToEndpoints(
   };
 }
 
-/** Fetches a .vrm binary from the server's local library route (Phase C).
+/** Fetches a .vrm binary from the server's local library route (Phase C,
+ * requalified to /api/device/vrms — POC.md §13.5 point 2).
  * Null when the file is unknown to the library (404) or the server is down. */
 export async function fetchLibraryVrm(fileName: string): Promise<ArrayBuffer | null> {
   try {
-    const response = await fetch(`/api/poc/vrms/file?name=${encodeURIComponent(fileName)}`, { cache: "no-store" });
+    const response = await fetch(`/api/device/vrms/file?name=${encodeURIComponent(fileName)}`, { cache: "no-store" });
     if (!response.ok) return null;
     return await response.arrayBuffer();
   } catch {
@@ -188,7 +204,7 @@ export async function applyPocDeviceConfig(
 
   // avatar.modelRef -> local VRM (single "current" record); when IndexedDB has
   // no matching file (POC Phase C), fall back to the server's local VRM
-  // library route (/api/poc/vrms/file) and persist it through the same
+  // library route (/api/device/vrms/file) and persist it through the same
   // handleVrmFileLoad path (repo.save). A name unknown to both -> the server
   // already rejected MODEL_REF_UNKNOWN; here we only warn, never crash.
   if (config.avatar.modelRef) {
@@ -278,14 +294,14 @@ async function applyAndLog(pending: PocReceivedDeviceConfig, hooks: PocApplyHook
   }
 }
 
-// One-shot localStorage -> durable file migration (first boot with the file
-// store, POC.md §13.4): the server file is empty but the renderer localStorage
-// still holds the last applied config. Re-submitting it through the normal
-// POST /api/device-config path re-validates it server-side and populates the
-// file; the next poll delivers it back with a fresh receivedAt and it is
-// re-applied once. Only runs when the server reports `durable` (file store
-// active) AND returned no pending config — never in `npm run dev` memory
-// mode, so there is no re-submit loop across dev boots.
+// One-shot localStorage -> durable file migration (first boot after the
+// pending-config channel was retired, POC.md §13.5 point 3): the server file
+// is empty but the renderer localStorage still holds the last applied config.
+// Re-submitting it through the normal POST /api/device-config path re-validates
+// it server-side and populates the file; the next poll delivers it back with a
+// fresh receivedAt and it is re-applied once. Detected via GET /api/device-config
+// returning config:null — never runs once the server holds a config (or after
+// one attempt), so there is no re-submit loop.
 let migrationAttempted = false;
 
 // Exported for tests only; the poller is the production caller.
@@ -306,27 +322,31 @@ export async function migrateStoredConfigToServer(): Promise<void> {
   }
 }
 
-/** Poll loop (~2 s). Starts lazily, tolerates an unreachable server (1 log, no
- * spam). Returns a clean stop function. */
+/** Poll loop (~2 s) on GET /api/device-config (stable, contract-grade —
+ * replaces the retired /api/poc/pending-config channel). Starts lazily,
+ * tolerates an unreachable server (1 log, no spam). Returns a clean stop
+ * function. */
 export function startPocDeviceConfigPolling(hooks: PocApplyHooks, intervalMs = POC_POLL_INTERVAL_MS): () => void {
   let unreachableLogged = false;
 
   const tick = async () => {
     try {
-      const response = await fetch("/api/poc/pending-config?consume=1", { cache: "no-store" });
+      const response = await fetch("/api/device-config", { cache: "no-store" });
       if (!response.ok) throw new Error(`status=${response.status}`);
-      const json = (await response.json()) as { ok?: unknown; pending?: unknown; durable?: unknown };
+      const json = (await response.json()) as { ok?: unknown; config?: unknown };
       unreachableLogged = false;
-      if (json.ok === true && json.pending) {
-        await ingestPocPendingPayload(json.pending, hooks);
-      } else if (json.ok === true && json.durable === true) {
+      if (json.ok === true && json.config) {
+        await ingestPocPendingPayload(json.config, hooks);
+      } else if (json.ok === true) {
+        // Empty durable store: re-submit the renderer cache once (one-shot
+        // localStorage->file migration, first boot after the code migration).
         await migrateStoredConfigToServer();
       }
     } catch {
       // Server unreachable (PhB POC): retry silently, log once per outage.
       if (!unreachableLogged) {
         unreachableLogged = true;
-        pocRendererLog("pending-config unreachable (retrying silently)");
+        pocRendererLog("device-config poll unreachable (retrying silently)");
       }
     }
   };

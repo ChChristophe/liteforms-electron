@@ -1,11 +1,9 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { POST } from "./route";
-import { readPendingConfig } from "@/lib/deviceConfig/pendingConfigStore";
-import { loadDeviceConfigFile, resolveDeviceConfigPath } from "@/lib/deviceConfig/deviceConfigFile";
-import { GET as getPending } from "../poc/pending-config/route";
+import { GET, POST } from "./route";
+import { resolveDeviceConfigPath, DEVICE_CONFIG_FILE_NAME } from "@/lib/deviceConfig/deviceConfigFile";
 
 const validPayload = {
   configVersion: "1.0",
@@ -31,7 +29,11 @@ function post(body: unknown) {
   }) as never);
 }
 
-describe("POST /api/device-config (contract v1 POC)", () => {
+function get() {
+  return GET();
+}
+
+describe("POST /api/device-config (contract v1)", () => {
   it("accepts the full contract payload, validates fields and warns on unapplied blocks", async () => {
     const response = await post(validPayload);
     const json = await response.json();
@@ -44,9 +46,10 @@ describe("POST /api/device-config (contract v1 POC)", () => {
       "avatar.mood accepted but not applied in this POC (mood port pending)",
       "pose.depth ignored (not a number)"
     ]));
-    const pending = readPendingConfig();
-    expect(pending?.character.name).toBe("Clawdia");
-    expect(pending?.receivedAt).toBe(json.appliedAt);
+    // Dev fallback (no LITEFORMS_DEVICE_CONFIG_DIR): GET re-delivers it.
+    const stored = await (await get()).json();
+    expect(stored.config.character.name).toBe("Clawdia");
+    expect(stored.config.receivedAt).toBe(json.appliedAt);
   });
 
   it("is idempotent: the same payload is accepted twice", async () => {
@@ -55,7 +58,8 @@ describe("POST /api/device-config (contract v1 POC)", () => {
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(readPendingConfig()?.avatar.modelRef?.fileName).toBe("lobsterEdit.vrm");
+    const stored = await (await get()).json();
+    expect(stored.config.avatar.modelRef?.fileName).toBe("lobsterEdit.vrm");
   });
 
   it("rejects a wrong config version", async () => {
@@ -93,27 +97,16 @@ describe("POST /api/device-config (contract v1 POC)", () => {
   });
 });
 
-describe("GET /api/poc/pending-config", () => {
-  it("returns and clears the pending payload", async () => {
-    await post(validPayload);
-    const first = await getPending(new Request("http://localhost/api/poc/pending-config?consume=1"));
-    const firstJson = await first.json();
-    const second = await getPending(new Request("http://localhost/api/poc/pending-config"));
-    const secondJson = await second.json();
-
-    expect(firstJson.ok).toBe(true);
-    expect(firstJson.pending.character.name).toBe("Clawdia");
-    expect(secondJson.pending).toBeNull();
-  });
-});
-
-describe("durable file store (LITEFORMS_DEVICE_CONFIG_DIR set)", () => {
+describe("GET /api/device-config (durable read)", () => {
   let configDir: string;
   let previousEnv: string | undefined;
 
-  function useTempConfigDir() {
+  function useTempConfigDir(initialFile?: unknown) {
     configDir = join(tmpdir(), `liteforms-device-config-route-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(configDir, { recursive: true });
+    if (initialFile !== undefined) {
+      writeFileSync(join(configDir, DEVICE_CONFIG_FILE_NAME), JSON.stringify(initialFile), "utf8");
+    }
     previousEnv = process.env.LITEFORMS_DEVICE_CONFIG_DIR;
     process.env.LITEFORMS_DEVICE_CONFIG_DIR = configDir;
   }
@@ -127,37 +120,49 @@ describe("durable file store (LITEFORMS_DEVICE_CONFIG_DIR set)", () => {
     rmSync(configDir, { recursive: true, force: true });
   });
 
-  it("POST writes the durable file and pending-config serves it back from the file", async () => {
+  it("returns {ok, config:null} when the durable file is absent", async () => {
+    useTempConfigDir();
+    const response = await get();
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(json.ok).toBe(true);
+    expect(json.config).toBeNull();
+  });
+
+  it("POST writes the durable file and GET serves it back with receivedAt", async () => {
     useTempConfigDir();
     const response = await post(validPayload);
     const json = await response.json();
 
     expect(response.status).toBe(200);
-    const filePath = resolveDeviceConfigPath(configDir);
-    const stored = loadDeviceConfigFile(filePath);
-    expect(stored).not.toBeNull();
-    expect(stored?.config.character.name).toBe("Clawdia");
-    expect(stored?.receivedAt).toBe(json.appliedAt);
-
-    // consume=1 never deletes the durable file: the renderer deduplicates.
-    const pending = await getPending(new Request("http://localhost/api/poc/pending-config?consume=1"));
-    const pendingJson = await pending.json();
-    expect(pendingJson.durable).toBe(true);
-    expect(pendingJson.pending.character.name).toBe("Clawdia");
-    expect(loadDeviceConfigFile(filePath)?.receivedAt).toBe(json.appliedAt);
+    const stored = await (await get()).json();
+    expect(stored.ok).toBe(true);
+    expect(stored.config.character.name).toBe("Clawdia");
+    expect(stored.config.receivedAt).toBe(json.appliedAt);
   });
 
-  it("pending-config serves the file content after a simulated restart (memory empty)", async () => {
-    useTempConfigDir();
-    await post(validPayload);
+  it("serves the file content after a simulated restart (fresh server, file intact)", async () => {
+    useTempConfigDir({
+      version: 1,
+      receivedAt: "2026-09-11T10:00:00.000Z",
+      config: validPayload
+    });
 
-    // The memory park is process state; after a server restart only the file
-    // survives. Simulate it by clearing the park: the file re-delivers.
-    const { clearPendingConfig } = await import("@/lib/deviceConfig/pendingConfigStore");
-    clearPendingConfig();
-    const pending = await getPending(new Request("http://localhost/api/poc/pending-config"));
-    const pendingJson = await pending.json();
-    expect(pendingJson.pending.character.name).toBe("Clawdia");
-    expect(pendingJson.durable).toBe(true);
+    // No POST in this test: the route reads the file left by the "previous
+    // server process" — the durable read after a restart.
+    const stored = await (await get()).json();
+    expect(stored.ok).toBe(true);
+    expect(stored.config.receivedAt).toBe("2026-09-11T10:00:00.000Z");
+    expect(stored.config.character.name).toBe("Clawdia");
+  });
+
+  it("returns config:null for a corrupt file (never crashes the route)", async () => {
+    useTempConfigDir();
+    writeFileSync(resolveDeviceConfigPath(configDir), "{ not json", "utf8");
+
+    const stored = await (await get()).json();
+    expect(stored.ok).toBe(true);
+    expect(stored.config).toBeNull();
   });
 });

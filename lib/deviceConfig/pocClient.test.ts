@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  POC_DEVICE_CONFIG_KEY,
+  DEVICE_CONFIG_STORAGE_KEY,
   applyPocDeviceConfig,
   ingestPocPendingPayload,
   migrateStoredConfigToServer,
@@ -10,6 +10,8 @@ import {
 import { loadCharacterConfig } from "@/lib/storage/characterConfig";
 import { loadSessionConfig } from "@/lib/storage/sessionConfig";
 import type { StoredVrm, VrmRepository } from "@/lib/storage/vrmRepository";
+
+const LEGACY_DEVICE_CONFIG_KEY = "liteforms.poc.deviceConfig";
 
 const validPayload = {
   configVersion: "1.0" as const,
@@ -33,6 +35,9 @@ const localStorageMock = {
   getItem: (key: string) => store[key] ?? null,
   setItem: (key: string, value: string) => {
     store[key] = value;
+  },
+  removeItem: (key: string) => {
+    delete store[key];
   }
 };
 Object.defineProperty(globalThis, "localStorage", { value: localStorageMock, writable: true });
@@ -71,13 +76,13 @@ beforeEach(() => {
 });
 
 describe("POC renderer apply (Phase B §12.2)", () => {
-  it("writes liteforms.poc.deviceConfig on ingest and the payload stays readable", async () => {
+  it("writes liteforms.deviceConfig on ingest and the payload stays readable", async () => {
     const { hooks, sessions } = createHooks();
 
     await ingestPocPendingPayload({ ...validPayload, receivedAt: "2026-09-12T15:30:00Z" }, hooks);
 
     expect(sessions).toHaveLength(1);
-    const raw = store[POC_DEVICE_CONFIG_KEY];
+    const raw = store[DEVICE_CONFIG_STORAGE_KEY];
     expect(typeof raw).toBe("string");
     const stored = readStoredPocDeviceConfig();
     expect(stored?.receivedAt).toBe("2026-09-12T15:30:00Z");
@@ -118,7 +123,7 @@ describe("POC renderer apply (Phase B §12.2)", () => {
     await ingestPocPendingPayload(pending, hooks);
     await ingestPocPendingPayload(pending, hooks);
 
-    expect(store[POC_DEVICE_CONFIG_KEY]).toContain("r2");
+    expect(store[DEVICE_CONFIG_STORAGE_KEY]).toContain("r2");
     expect(characters).toHaveLength(1);
     expect(sessions).toHaveLength(1);
   });
@@ -154,7 +159,7 @@ describe("POC renderer apply (Phase B §12.2)", () => {
     expect(characters).toHaveLength(1);
   });
 
-  it("loads a modelRef matching a library file via /api/poc/vrms/file and saves it", async () => {
+  it("loads a modelRef matching a library file via /api/device/vrms/file and saves it", async () => {
     const { hooks, models } = createHooks();
     const saved: StoredVrm[] = [];    const fetchMock = vi.fn(() => Promise.resolve(new Response(new Uint8Array([1, 2, 3]), { status: 200 })));
     vi.stubGlobal("fetch", fetchMock);
@@ -178,7 +183,7 @@ describe("POC renderer apply (Phase B §12.2)", () => {
 
     expect(result.applied).toContain("vrm");
     expect(result.warnings).not.toContainEqual(expect.stringMatching(/MODEL_REF_UNKNOWN/));
-    expect(fetchMock).toHaveBeenCalledWith("/api/poc/vrms/file?name=library.vrm", { cache: "no-store" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/device/vrms/file?name=library.vrm", { cache: "no-store" });
     expect(saved[0]).toMatchObject({ fileName: "library.vrm" });
     expect(models).toHaveLength(1);
   });
@@ -202,7 +207,7 @@ describe("POC renderer apply (Phase B §12.2)", () => {
   });
 });
 
-describe("localStorage -> durable file migration (first boot with the file store)", () => {
+describe("localStorage -> durable file migration (one-shot, file empty + cache full)", () => {
   it("does nothing when the renderer localStorage is empty", async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response("{}", { status: 200 })));
     vi.stubGlobal("fetch", fetchMock);
@@ -216,7 +221,7 @@ describe("localStorage -> durable file migration (first boot with the file store
   it("re-submits the stored config once via POST /api/device-config", async () => {
     // The previous test ran with an empty localStorage, so the module-level
     // one-shot flag is still unset; this test consumes it (per-file isolation).
-    store[POC_DEVICE_CONFIG_KEY] = JSON.stringify({ ...validPayload, receivedAt: "r-mig" });
+    store[DEVICE_CONFIG_STORAGE_KEY] = JSON.stringify({ ...validPayload, receivedAt: "r-mig" });
     const fetchMock = vi.fn(() => Promise.resolve(new Response("{}", { status: 200 })));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -231,5 +236,19 @@ describe("localStorage -> durable file migration (first boot with the file store
     expect(body.receivedAt).toBe("r-mig");
     expect(body.character?.name).toBe("Clawdia");
     vi.unstubAllGlobals();
+  });
+});
+
+describe("localStorage key rename (liteforms.poc.deviceConfig -> liteforms.deviceConfig)", () => {
+  it("imports a legacy cache entry once: reads it, rewrites it, removes the old key", () => {
+    store[LEGACY_DEVICE_CONFIG_KEY] = JSON.stringify({ ...validPayload, receivedAt: "r-legacy" });
+
+    const stored = readStoredPocDeviceConfig();
+
+    expect(stored?.receivedAt).toBe("r-legacy");
+    expect(store[DEVICE_CONFIG_STORAGE_KEY]).toContain("r-legacy");
+    expect(store[LEGACY_DEVICE_CONFIG_KEY]).toBeUndefined();
+    // Second read goes through the new key only.
+    expect(readStoredPocDeviceConfig()?.receivedAt).toBe("r-legacy");
   });
 });
