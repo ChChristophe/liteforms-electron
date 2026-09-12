@@ -19,7 +19,7 @@ let windowHiddenForBackground = false;
 let powerSaveBlockerId: number | null = null;
 const wiredDiagnosticsWindows = new WeakSet<BrowserWindow>();
 const maxDiagnosticLogBytes = 5 * 1024 * 1024;
-const nativeBridgeService = registerNativeBridgeIpc(ipcMain);
+const nativeBridgeService = registerNativeBridgeIpc(ipcMain, writeDiagnostic);
 
 function diagnosticLogPath(): string {
   try {
@@ -277,12 +277,35 @@ function findDisplayForPopupFeatures(features: string | undefined): Electron.Dis
     || ![left, top, width, height].every((value) => Number.isFinite(value))
   ) return undefined;
 
+  // Exact match only: a stale/wrong popup position must not silently pick the
+  // nearest display (that could fill the primary laptop screen with the quilt).
   return screen.getAllDisplays().find((display) => (
     display.bounds.x === left
     && display.bounds.y === top
     && display.bounds.width === width
     && display.bounds.height === height
-  )) ?? screen.getDisplayMatching({ x: left, y: top, width, height });
+  ));
+}
+
+function findNearestDisplayForPopupFeatures(features: string | undefined): Electron.Display | undefined {
+  if (!features) return undefined;
+
+  const values = new Map(
+    features.split(",").map((feature) => {
+      const [name, value] = feature.split("=", 2);
+      return [name?.trim().toLowerCase(), Number(value)] as const;
+    }),
+  );
+  const left = values.get("left");
+  const top = values.get("top");
+  const width = values.get("width");
+  const height = values.get("height");
+  if (
+    left === undefined || top === undefined || width === undefined || height === undefined
+    || ![left, top, width, height].every((value) => Number.isFinite(value))
+  ) return undefined;
+
+  return screen.getDisplayMatching({ x: left, y: top, width, height });
 }
 
 function createWindow(url: string) {
@@ -328,7 +351,13 @@ function createWindow(url: string) {
     // x/y), so Electron would otherwise fill the primary screen with the portrait
     // quilt canvas stuck at the left edge. Place it explicitly on the LKG display.
     if (decision.response.action === "allow" && isHologramWindowOpenRequest(details)) {
-      const display = findDisplayForPopupFeatures(details.features) ?? findLookingGlassDisplay();
+      // Exact feature match first (authoritative native display position), then
+      // the portrait/largest secondary display, then a last-resort nearest match.
+      // Native display x/y can be missing or stale on Linux, where an
+      // unchecked nearest-match would otherwise fill the primary screen.
+      const display = findDisplayForPopupFeatures(details.features)
+        ?? findLookingGlassDisplay()
+        ?? findNearestDisplayForPopupFeatures(details.features);
       if (display) {
         decision.response.overrideBrowserWindowOptions = {
           ...hologramWindowBrowserOptions,
@@ -542,6 +571,22 @@ app.whenReady().then(async () => {
   powerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension");
 
   Menu.setApplicationMenu(null);
+
+  // One-line display inventory: proves whether Electron itself sees the Looking
+  // Glass display (vs. only xrandr), and with which bounds/label it is exposed.
+  const logDisplayInventory = () => {
+    writeDiagnostic(
+      `[displays] ` + screen.getAllDisplays().map((display) => {
+        const label = (display as unknown as { label?: string }).label ?? "?";
+        return `${label} bounds=${display.bounds.x},${display.bounds.y} ` +
+          `${display.bounds.width}x${display.bounds.height} primary=${display.id === screen.getPrimaryDisplay().id}`;
+      }).join(" | ")
+    );
+  };
+  logDisplayInventory();
+  screen.on("display-added", () => logDisplayInventory());
+  screen.on("display-removed", () => logDisplayInventory());
+  screen.on("display-metrics-changed", () => logDisplayInventory());
 
   // Hook diagnostics onto child windows too (e.g. the /hologram popup created via
   // window.open). The main window is already wired by createWindow.

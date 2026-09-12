@@ -36,6 +36,7 @@ export function useHologramBridge() {
   const targetOriginRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<MainToHologramMessage[]>([]);
   const readyListenerRef = useRef<((event: MessageEvent) => void) | null>(null);
+  const openingRef = useRef(false);
 
   const sendPendingMessage = useCallback((win: Window, message: MainToHologramMessage, targetOrigin: string) => {
     const transfer = "bytes" in message ? [message.bytes] : undefined;
@@ -50,7 +51,11 @@ export function useHologramBridge() {
       if (message.kind === "lipsync") {
         pendingMessagesRef.current = pendingMessagesRef.current.filter(({ kind }) => kind !== "lipsync");
       } else if (pendingMessagesRef.current.length >= 64) {
+        logDiagnostic(`holo-bridge message dropped kind=${message.kind} reason=queue-full`);
         return false;
+      } else {
+        // A queued (not sent) message is otherwise invisible in diagnostics.
+        logDiagnostic(`holo-bridge message queued kind=${message.kind} pending=${pendingMessagesRef.current.length + 1}`);
       }
       pendingMessagesRef.current.push(message);
       return true;
@@ -112,19 +117,40 @@ export function useHologramBridge() {
     resetTransport();
     setHologramActive(false);
     if (win && !win.closed) {
+      logDiagnostic(`holo-bridge window close requested name=${win.name}`);
       win.close();
+      // Electron closes the child asynchronously; verify so a silently
+      // surviving hologram window (black Looking Glass candidate) is visible
+      // in the diagnostic log instead of assumed.
+      window.setTimeout(() => {
+        logDiagnostic(win.closed
+          ? "holo-bridge window close confirmed"
+          : "holo-bridge window close NOT confirmed");
+      }, 500);
     }
   }, [resetTransport, stopRelay, stopClosePoller]);
 
   const open = useCallback(async (modelUrl: string | undefined, targetScreen?: ScreenLike) => {
     if (holoWinRef.current && !holoWinRef.current.closed) return;
+    if (openingRef.current) return;
     stopClosePoller();
 
-    const shareable = await resolveShareableModel(modelUrl);
-    const base = window.location.origin;
-    const shareUrl = shareable && "url" in shareable ? shareable.url : undefined;
-    const url = buildHologramRouteUrl(base, shareUrl);
-    const popup = await openHldHologramWindow(window, url, targetScreen);
+    // open() awaits before assigning holoWinRef; without this in-flight guard
+    // two concurrent calls (e.g. rapid reopen) both pass the check above and
+    // create duplicate hologram windows / duplicate relay listeners.
+    openingRef.current = true;
+    let popup: Window | null = null;
+    let url = "";
+    let shareable: Awaited<ReturnType<typeof resolveShareableModel>>;
+    try {
+      shareable = await resolveShareableModel(modelUrl);
+      const base = window.location.origin;
+      const shareUrl = shareable && "url" in shareable ? shareable.url : undefined;
+      url = buildHologramRouteUrl(base, shareUrl);
+      popup = await openHldHologramWindow(window, url, targetScreen);
+    } finally {
+      openingRef.current = false;
+    }
     if (!popup) return;
 
     holoWinRef.current = popup;
@@ -220,12 +246,24 @@ export function useHologramBridge() {
 
   const updateModel = useCallback(async (modelUrl: string | undefined): Promise<boolean> => {
     const win = holoWinRef.current;
-    if (!win || win.closed) return false;
+    if (!win || win.closed) {
+      logDiagnostic(`holo-bridge updateModel skip no-window url=${modelUrl ?? "-"}`);
+      return false;
+    }
     const shareable = await resolveShareableModel(modelUrl);
-    if (!shareable) return false;
-    return "url" in shareable
+    if (!shareable) {
+      logDiagnostic(`holo-bridge updateModel resolve-failed url=${modelUrl ?? "-"}`);
+      return false;
+    }
+    const sent = "url" in shareable
       ? sendMessage(win, { origin: hologramMessageOrigin, kind: "model-url", url: shareable.url })
       : sendMessage(win, { origin: hologramMessageOrigin, kind: "model-bytes", bytes: shareable.bytes });
+    logDiagnostic(
+      "url" in shareable
+        ? `holo-bridge updateModel model-url url=${shareable.url} sent=${sent}`
+        : `holo-bridge updateModel model-bytes bytes=${shareable.bytes.byteLength} sent=${sent}`
+    );
+    return sent;
   }, [sendMessage]);
 
   useEffect(() => {

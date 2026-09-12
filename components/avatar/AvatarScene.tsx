@@ -79,9 +79,11 @@ import {
 type AvatarSceneProps = {
   modelUrl?: string;
   hideVrButton?: boolean;
+  environmentTint?: string;
 };
 
 const DEFAULT_MODEL_URL = "/models/lobsterEdit.vrm";
+const DEFAULT_AMBIENT_TINT = "#fff6e5";
 const DEFAULT_IDLE_ANIMATION_URL = "/animations/idle_loop.vrma";
 const ALCOVE_URL = "/models/Alcove.glb";
 const IMPORTED_MODEL_VERTICAL_OFFSET = 0.025;
@@ -255,13 +257,28 @@ function ensureLobsterSceneReference(): Promise<SceneTransformReference> {
   return _lobsterSceneReferencePromise;
 }
 
-export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false }: AvatarSceneProps) {
+function formatVector3(value: Vector3): string {
+  return `${value.x.toFixed(3)},${value.y.toFixed(3)},${value.z.toFixed(3)}`;
+}
+
+export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false, environmentTint }: AvatarSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const ambientLightRef = useRef<AmbientLight | null>(null);
+  const environmentTintRef = useRef(environmentTint);
   const vrmRef = useRef<VRM | undefined>(undefined);
   const idleAnimatorRef = useRef<VrmIdleAnimator | undefined>(undefined);
   const loaderRef = useRef<GLTFLoader | undefined>(undefined);
   const warnedMissingMorphsRef = useRef(new Set<string>());
   const [status, setStatus] = useState("Loading avatar");
+
+  // Keep the tint ref in sync before the scene effect and push updates into the
+  // live ambient light so the alcove color changes without a scene rebuild.
+  useEffect(() => {
+    environmentTintRef.current = environmentTint;
+    if (ambientLightRef.current) {
+      ambientLightRef.current.color.set(environmentTint ?? DEFAULT_AMBIENT_TINT);
+    }
+  }, [environmentTint]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -289,13 +306,16 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
     let lkgControlsObserver: MutationObserver | undefined;
     let vrButtonTextObserver: MutationObserver | undefined;
     let nativeBridgeCalibrationRetryId: number | undefined;
+    let lastNativeCalibrationKey = "";
     let lkgConfigChangeCleanup: (() => void) | undefined;
     let xrSessionEndCleanup: (() => void) | undefined;
     let autoEnterIntervalId: number | undefined;
+    let autoEnterAttempts = 0;
     let modelLoaded = false;
     let exitHldFallback: (() => void) | undefined;
     let isHldFallbackActive = false;
     let isLkgSessionActive = false;
+    let xrSessionStarted = false;
     let nativeLookingGlassDisplayConnection: NativeLookingGlassDisplayConnection = "unavailable";
 
     try {
@@ -345,6 +365,19 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
             window.clearInterval(nativeBridgeCalibrationRetryId);
             nativeBridgeCalibrationRetryId = undefined;
           }
+          if (nativeBridgeState.available) {
+            const serial = nativeBridgeState.display.serial || nativeBridgeState.calibration.serial || "-";
+            const stateKey = `serial=${serial} ${nativeBridgeState.display.width}x${nativeBridgeState.display.height}`;
+            if (stateKey !== lastNativeCalibrationKey) {
+              lastNativeCalibrationKey = stateKey;
+              logDiagnostic(`native calibration applied ${stateKey}`);
+            }
+          }
+        } else if (nativeBridgeState.available === false && lastNativeCalibrationKey !== "unavailable") {
+          // Keep this visible: a silent native failure here means the hologram
+          // window renders with default (wrong) device calibration.
+          lastNativeCalibrationKey = "unavailable";
+          logDiagnostic(`native calibration unavailable: ${nativeBridgeState.error}`);
         }
       };
 
@@ -436,7 +469,8 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       lkgConfigChangeCleanup = () => {
         LookingGlassConfig.removeEventListener("on-config-changed", lkgConfigChangeListener);
       };
-      const ambientLight = new AmbientLight("#fff6e5", 1.2);
+      const ambientLight = new AmbientLight(environmentTintRef.current ?? DEFAULT_AMBIENT_TINT, 1.2);
+      ambientLightRef.current = ambientLight;
       const keyLight = new DirectionalLight("#ffffff", 2.4);
       keyLight.position.set(0.5, 0.5, 2);
       configureLightShadow(keyLight);
@@ -556,6 +590,13 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
           runtimeAnimator?.dispose();
           const environmentReference = await frameModel(loadedVrm.scene);
           if (disposed) return;
+          // Same model in both windows must produce the same transform; a
+          // mismatch here is the black-screen (model out of view) candidate.
+          logDiagnostic(
+            `AvatarScene model framed | hologram=${isHologramWindow()} ` +
+            `scale=${formatVector3(environmentReference.environmentScale)} ` +
+            `pos=${formatVector3(environmentReference.environmentPosition)}`
+          );
           prepareVrmSpringBones(loadedVrm);
           runtimeAnimator = new VrmRuntimeAnimator(loadedVrm);
 
@@ -602,8 +643,12 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
           });
         },
         undefined,
-        () => {
-          if (!disposed) setStatus("Avatar failed to load");
+        (err) => {
+          if (disposed) return;
+          // A silent 3D load failure after the morph warnings would leave the
+          // hologram window black with no trace — log it explicitly.
+          logDiagnostic(`AvatarScene model load failed | hologram=${isHologramWindow()} url=${modelUrl} error=${String(err)}`);
+          setStatus("Avatar failed to load");
         }
       );
 
@@ -802,7 +847,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
           }
         };
         autoEnterIntervalId = window.setInterval(() => {
-          if (disposed || isLkgSessionActive) {
+          if (disposed || isLkgSessionActive || xrSessionStarted) {
             if (autoEnterIntervalId !== undefined) window.clearInterval(autoEnterIntervalId);
             return;
           }
@@ -811,9 +856,16 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
           if (!btn) return;
           if ((btn as HTMLButtonElement).disabled) return;
           if (!deviceCalibrationReady() && Date.now() - autoEnterStartedAt < 6000) return;
-          if (autoEnterIntervalId !== undefined) window.clearInterval(autoEnterIntervalId);
+          autoEnterAttempts++;
+          if (autoEnterAttempts > 10) {
+            if (autoEnterIntervalId !== undefined) window.clearInterval(autoEnterIntervalId);
+            try {
+              logDiagnostic("auto-enter gave up | no xr session after 10 attempts");
+            } catch { /* ignore */ }
+            return;
+          }
           try {
-            logDiagnostic("auto-enter click | waiting for device calibration");
+            logDiagnostic(`auto-enter click | attempt=${autoEnterAttempts}`);
           } catch { /* ignore */ }
           btn.click();
         }, 300);
@@ -890,8 +942,11 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       }
 
       renderer.xr.addEventListener("sessionend", restorePreviewCamera);
+      const onXrSessionStart = () => { xrSessionStarted = true; };
+      renderer.xr.addEventListener("sessionstart", onXrSessionStart);
       xrSessionEndCleanup = () => {
         renderer?.xr.removeEventListener("sessionend", restorePreviewCamera);
+        renderer?.xr.removeEventListener("sessionstart", onXrSessionStart);
       };
 
       const drawHldShadow = () => {
@@ -985,6 +1040,17 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
 
     return () => {
       disposed = true;
+      // A model-bytes update remounts this whole scene (effect deps include
+      // modelUrl). If a Looking Glass session is left presenting from the
+      // WebGL context we are about to dispose, the device keeps showing a
+      // black quilt — end the session explicitly before the renderer dies.
+      const activeSession = renderer?.xr.getSession();
+      if (activeSession) {
+        logDiagnostic("AvatarScene teardown | ending active xr session");
+        try {
+          void activeSession.end().catch(() => { /* ignore */ });
+        } catch { /* ignore */ }
+      }
       renderer?.setAnimationLoop(null);
       if (resizeListener) window.removeEventListener("resize", resizeListener);
       if (lipSyncListener) window.removeEventListener(avatarLipSyncEventName, lipSyncListener);
@@ -1024,6 +1090,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       shadowCanvas?.remove();
       vrButton?.remove();
       vrmRef.current = undefined;
+      ambientLightRef.current = null;
     };
   }, [modelUrl, hideVrButton]);
 
