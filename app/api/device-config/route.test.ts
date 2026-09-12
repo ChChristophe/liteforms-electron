@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { POST } from "./route";
 import { readPendingConfig } from "@/lib/deviceConfig/pendingConfigStore";
+import { loadDeviceConfigFile, resolveDeviceConfigPath } from "@/lib/deviceConfig/deviceConfigFile";
 import { GET as getPending } from "../poc/pending-config/route";
 
 const validPayload = {
@@ -100,5 +104,60 @@ describe("GET /api/poc/pending-config", () => {
     expect(firstJson.ok).toBe(true);
     expect(firstJson.pending.character.name).toBe("Clawdia");
     expect(secondJson.pending).toBeNull();
+  });
+});
+
+describe("durable file store (LITEFORMS_DEVICE_CONFIG_DIR set)", () => {
+  let configDir: string;
+  let previousEnv: string | undefined;
+
+  function useTempConfigDir() {
+    configDir = join(tmpdir(), `liteforms-device-config-route-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(configDir, { recursive: true });
+    previousEnv = process.env.LITEFORMS_DEVICE_CONFIG_DIR;
+    process.env.LITEFORMS_DEVICE_CONFIG_DIR = configDir;
+  }
+
+  afterEach(() => {
+    if (previousEnv === undefined) {
+      delete process.env.LITEFORMS_DEVICE_CONFIG_DIR;
+    } else {
+      process.env.LITEFORMS_DEVICE_CONFIG_DIR = previousEnv;
+    }
+    rmSync(configDir, { recursive: true, force: true });
+  });
+
+  it("POST writes the durable file and pending-config serves it back from the file", async () => {
+    useTempConfigDir();
+    const response = await post(validPayload);
+    const json = await response.json();
+
+    expect(response.status).toBe(200);
+    const filePath = resolveDeviceConfigPath(configDir);
+    const stored = loadDeviceConfigFile(filePath);
+    expect(stored).not.toBeNull();
+    expect(stored?.config.character.name).toBe("Clawdia");
+    expect(stored?.receivedAt).toBe(json.appliedAt);
+
+    // consume=1 never deletes the durable file: the renderer deduplicates.
+    const pending = await getPending(new Request("http://localhost/api/poc/pending-config?consume=1"));
+    const pendingJson = await pending.json();
+    expect(pendingJson.durable).toBe(true);
+    expect(pendingJson.pending.character.name).toBe("Clawdia");
+    expect(loadDeviceConfigFile(filePath)?.receivedAt).toBe(json.appliedAt);
+  });
+
+  it("pending-config serves the file content after a simulated restart (memory empty)", async () => {
+    useTempConfigDir();
+    await post(validPayload);
+
+    // The memory park is process state; after a server restart only the file
+    // survives. Simulate it by clearing the park: the file re-delivers.
+    const { clearPendingConfig } = await import("@/lib/deviceConfig/pendingConfigStore");
+    clearPendingConfig();
+    const pending = await getPending(new Request("http://localhost/api/poc/pending-config"));
+    const pendingJson = await pending.json();
+    expect(pendingJson.pending.character.name).toBe("Clawdia");
+    expect(pendingJson.durable).toBe(true);
   });
 });

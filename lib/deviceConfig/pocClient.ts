@@ -258,9 +258,10 @@ function ingestPending(
 export async function ingestPocPendingPayload(pendingRaw: unknown, hooks: PocApplyHooks): Promise<void> {
   const outcome = ingestPending(pendingRaw, hooks, "poll");
   if ("skip" in outcome) {
-    if (outcome.skip === "duplicate") {
-      pocRendererLog("apply skipped duplicate (already stored)");
-    }
+    // Duplicate skips stay silent: with the durable file store the server
+    // re-delivers the last config on every poll (POC.md §13.4) and the
+    // receivedAt dedup IS the steady state — logging it would spam the
+    // diagnostic file every 2 s.
     return;
   }
   await applyAndLog(outcome.pending, hooks);
@@ -277,6 +278,34 @@ async function applyAndLog(pending: PocReceivedDeviceConfig, hooks: PocApplyHook
   }
 }
 
+// One-shot localStorage -> durable file migration (first boot with the file
+// store, POC.md §13.4): the server file is empty but the renderer localStorage
+// still holds the last applied config. Re-submitting it through the normal
+// POST /api/device-config path re-validates it server-side and populates the
+// file; the next poll delivers it back with a fresh receivedAt and it is
+// re-applied once. Only runs when the server reports `durable` (file store
+// active) AND returned no pending config — never in `npm run dev` memory
+// mode, so there is no re-submit loop across dev boots.
+let migrationAttempted = false;
+
+// Exported for tests only; the poller is the production caller.
+export async function migrateStoredConfigToServer(): Promise<void> {
+  const stored = readStoredPocDeviceConfig();
+  if (!stored || migrationAttempted) return;
+  try {
+    const response = await fetch("/api/device-config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(stored)
+    });
+    if (!response.ok) throw new Error(`status=${response.status}`);
+    migrationAttempted = true;
+    pocRendererLog(`migration localStorage->file re-submitted receivedAt=${stored.receivedAt}`);
+  } catch {
+    // Server hiccup: leave the flag unset so a later tick retries.
+  }
+}
+
 /** Poll loop (~2 s). Starts lazily, tolerates an unreachable server (1 log, no
  * spam). Returns a clean stop function. */
 export function startPocDeviceConfigPolling(hooks: PocApplyHooks, intervalMs = POC_POLL_INTERVAL_MS): () => void {
@@ -286,10 +315,12 @@ export function startPocDeviceConfigPolling(hooks: PocApplyHooks, intervalMs = P
     try {
       const response = await fetch("/api/poc/pending-config?consume=1", { cache: "no-store" });
       if (!response.ok) throw new Error(`status=${response.status}`);
-      const json = (await response.json()) as { ok?: unknown; pending?: unknown };
+      const json = (await response.json()) as { ok?: unknown; pending?: unknown; durable?: unknown };
       unreachableLogged = false;
       if (json.ok === true && json.pending) {
         await ingestPocPendingPayload(json.pending, hooks);
+      } else if (json.ok === true && json.durable === true) {
+        await migrateStoredConfigToServer();
       }
     } catch {
       // Server unreachable (PhB POC): retry silently, log once per outage.
@@ -301,7 +332,10 @@ export function startPocDeviceConfigPolling(hooks: PocApplyHooks, intervalMs = P
   };
 
   // Boot restore: the refreshed renderer re-applies its own stored payload so
-  // character/providers/environment survive a page reload.
+  // character/providers/environment survive a page reload. The localStorage
+  // key stays a renderer cache; the durable source of truth is now the server
+  // file — when the cache is empty (fresh storage), the poll below delivers
+  // the last file config and it is applied like any pending payload.
   const stored = readStoredPocDeviceConfig();
   if (stored) {
     pocRendererLog(`boot restore receivedAt=${stored.receivedAt}`);

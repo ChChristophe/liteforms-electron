@@ -39,6 +39,17 @@ function vrmLibraryPath(): string {
   }
 }
 
+// Durable device-config folder (POC.md §13.4): <userData>/config/ holds the
+// device-config.json written by the Next server. Forwarded the same way as
+// the VRM library, via LITEFORMS_DEVICE_CONFIG_DIR.
+function deviceConfigDirPath(): string {
+  try {
+    return join(app.getPath("userData"), "config");
+  } catch {
+    return "config";
+  }
+}
+
 function writeDiagnostic(line: string): void {
   try {
     const path = diagnosticLogPath();
@@ -135,7 +146,9 @@ async function startPackagedNextServer() {
       // Channel for the Next routes' [poc] tracing into the diagnostic log.
       LITEFORMS_DIAGNOSTIC_LOG: diagnosticLogPath(),
       // Local VRM library folder (POC Phase C), created below at startup.
-      LITEFORMS_VRM_LIBRARY_DIR: vrmLibraryPath()
+      LITEFORMS_VRM_LIBRARY_DIR: vrmLibraryPath(),
+      // Durable device-config folder (POC.md §13.4), created below at startup.
+      LITEFORMS_DEVICE_CONFIG_DIR: deviceConfigDirPath()
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -560,6 +573,15 @@ app.whenReady().then(async () => {
     writeDiagnostic(`[vrm-library] ready (single source of truth: main process)`);
   } catch (err) {
     writeDiagnostic(`[vrm-library] creation failed ${String(err)}`);
+  }
+
+  // Durable device-config folder (POC.md §13.4): exists from the first launch
+  // so the Next server can always write device-config.json into it.
+  try {
+    mkdirSync(deviceConfigDirPath(), { recursive: true });
+    writeDiagnostic(`[device-config] dir ready (durable store: <userData>/config)`);
+  } catch (err) {
+    writeDiagnostic(`[device-config] dir creation failed ${String(err)}`);
   }
 
   if (process.platform === "win32") {

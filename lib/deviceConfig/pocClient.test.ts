@@ -3,6 +3,7 @@ import {
   POC_DEVICE_CONFIG_KEY,
   applyPocDeviceConfig,
   ingestPocPendingPayload,
+  migrateStoredConfigToServer,
   readStoredPocDeviceConfig,
   type PocApplyHooks,
 } from "./pocClient";
@@ -198,5 +199,37 @@ describe("POC renderer apply (Phase B §12.2)", () => {
 
     expect(result.warnings.join(" ")).toMatch(/unknown provider id/);
     expect(sessions).toHaveLength(0);
+  });
+});
+
+describe("localStorage -> durable file migration (first boot with the file store)", () => {
+  it("does nothing when the renderer localStorage is empty", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response("{}", { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await migrateStoredConfigToServer();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("re-submits the stored config once via POST /api/device-config", async () => {
+    // The previous test ran with an empty localStorage, so the module-level
+    // one-shot flag is still unset; this test consumes it (per-file isolation).
+    store[POC_DEVICE_CONFIG_KEY] = JSON.stringify({ ...validPayload, receivedAt: "r-mig" });
+    const fetchMock = vi.fn(() => Promise.resolve(new Response("{}", { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await migrateStoredConfigToServer();
+    await migrateStoredConfigToServer();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/device-config");
+    expect(init.method).toBe("POST");
+    const body = JSON.parse(String(init.body)) as { receivedAt?: string; character?: { name?: string } };
+    expect(body.receivedAt).toBe("r-mig");
+    expect(body.character?.name).toBe("Clawdia");
+    vi.unstubAllGlobals();
   });
 });
