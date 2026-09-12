@@ -29,6 +29,16 @@ function diagnosticLogPath(): string {
   }
 }
 
+// POC Phase C (POC.md §5.2/§6.2): local VRM library where the user drops .vrm
+// files by hand. Forwarded to the Next server via LITEFORMS_VRM_LIBRARY_DIR.
+function vrmLibraryPath(): string {
+  try {
+    return join(app.getPath("userData"), "vrm-library");
+  } catch {
+    return "vrm-library";
+  }
+}
+
 function writeDiagnostic(line: string): void {
   try {
     const path = diagnosticLogPath();
@@ -123,7 +133,9 @@ async function startPackagedNextServer() {
     env: {
       ...createNextServerEnv({ port, host }),
       // Channel for the Next routes' [poc] tracing into the diagnostic log.
-      LITEFORMS_DIAGNOSTIC_LOG: diagnosticLogPath()
+      LITEFORMS_DIAGNOSTIC_LOG: diagnosticLogPath(),
+      // Local VRM library folder (POC Phase C), created below at startup.
+      LITEFORMS_VRM_LIBRARY_DIR: vrmLibraryPath()
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -511,6 +523,15 @@ app.whenReady().then(async () => {
     `=== app.whenReady === exe=${process.execPath} isPackaged=${app.isPackaged} ` +
       `userData=${app.getPath("userData")} appPath=${app.getAppPath()} resources=${process.resourcesPath}`
   );
+
+  // POC Phase C: the local VRM library folder exists from the first launch so
+  // the user can drop .vrm files into it before any mobile call comes in.
+  try {
+    mkdirSync(vrmLibraryPath(), { recursive: true });
+    writeDiagnostic(`[vrm-library] ready (single source of truth: main process)`);
+  } catch (err) {
+    writeDiagnostic(`[vrm-library] creation failed ${String(err)}`);
+  }
 
   if (process.platform === "win32") {
     app.setAppUserModelId("org.liteforms.web");
