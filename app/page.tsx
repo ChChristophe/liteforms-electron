@@ -19,6 +19,7 @@ import { saveSessionConfig, loadSessionConfig } from "@/lib/storage/sessionConfi
 import { saveCharacterConfig, loadCharacterConfig } from "@/lib/storage/characterConfig";
 import { createIndexedDbVrmRepository } from "@/lib/storage/indexedDbVrmRepository";
 import type { VrmRepository } from "@/lib/storage/vrmRepository";
+import { startPocDeviceConfigPolling, type PocApplyHooks } from "@/lib/deviceConfig/pocClient";
 
 const onboardingStorageKey = "liteforms.onboardingMode";
 const bridgeConnectionPollMs = 1500;
@@ -101,8 +102,34 @@ export default function HomePage() {
       setShouldPreloadLocalModels(true);
     }
 
+    // POC renderer apply hooks (POC.md §12.2): project incoming blocks onto the
+    // existing setters, mirroring handleUseCustom / handleCharacterChange.
+    const buildPocApplyHooks = (): PocApplyHooks => ({
+      setCharacter: (next) => setCharacter(next),
+      onSessionConfig: (session) => {
+        setInitialLlmConfig(session.llm);
+        setInitialTtsConfig(session.tts);
+        setInitialAsrConfig(session.asr);
+        if (session.realtimeVoice) {
+          setInitialRealtimeVoiceConfig(session.realtimeVoice);
+        }
+        // React batches these updates: ChatPanel re-mounts once with the new
+        // initial configs (same path as handleUseCustom).
+        setChatPanelKey((k) => k + 1);
+      },
+      getVrmRepository: () => vrmRepoRef.current,
+      onVrmModel: (stored) => {
+        setModelUrl(URL.createObjectURL(new Blob([stored.arrayBuffer])));
+        setRestoredVrmFileName(stored.fileName);
+      }
+    });
+
+    let stopPocDeviceConfigPolling: (() => void) | undefined;
     createIndexedDbVrmRepository().then((repo) => {
       vrmRepoRef.current = repo;
+      // POC Phase B apply loop starts once the VRM repo is ready so a stored or
+      // incoming modelRef can be matched live.
+      stopPocDeviceConfigPolling = startPocDeviceConfigPolling(buildPocApplyHooks());
       return repo.load();
     }).then((stored) => {
       if (!stored) return;
@@ -111,7 +138,12 @@ export default function HomePage() {
       setRestoredVrmFileName(stored.fileName);
     }).catch(() => {
       // IndexedDB may be unavailable (private browsing, storage quota, etc.)
+      // The POC apply loop must still run without it.
+      stopPocDeviceConfigPolling = startPocDeviceConfigPolling(buildPocApplyHooks());
     });
+    return () => {
+      stopPocDeviceConfigPolling?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -126,6 +158,17 @@ export default function HomePage() {
         if (disposed) return;
         setBridgeConnected(connection.connected);
         setBridgeDisplay(connection.display);
+        // The native probe failure is otherwise silent: log it so one diagnostic
+        // run is enough to see why the Looking Glass stays unreachable.
+        const stateKey = connection.connected
+          ? `connected source=${connection.source} display=${connection.display
+            ? `${connection.display.left},${connection.display.top} ${connection.display.width}x${connection.display.height}`
+            : "-"}`
+          : `disconnected source=${connection.source} error="${connection.error ?? "-"}"`;
+        if (stateKey !== previousConnectionKeyRef.current) {
+          previousConnectionKeyRef.current = stateKey;
+          logDiagnostic(`bridge poll ${stateKey}`);
+        }
       } finally {
         checking = false;
       }
@@ -143,6 +186,7 @@ export default function HomePage() {
 
   const previousBridgeStateRef = useRef<boolean | undefined>(undefined);
   const previousBridgeDisplayKeyRef = useRef("");
+  const previousConnectionKeyRef = useRef("");
 
   useEffect(() => {
     const decision = resolveHologramAutoOpen(

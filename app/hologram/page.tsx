@@ -12,6 +12,10 @@ import {
 import { dispatchAvatarLipSyncFrame } from "@/lib/avatar/lipSyncEvents";
 import { createRmsLipSyncFrame, playTtsResult } from "@/lib/speech";
 import type { TtsResult } from "@/lib/speech";
+import {
+  ENVIRONMENT_CONFIG_KEY,
+  loadEnvironmentConfig,
+} from "@/lib/storage/environmentConfig";
 
 let sharedAudioContext: AudioContext | null = null;
 let liveAnalyser: AnalyserNode | null = null;
@@ -79,8 +83,23 @@ function readInitialModelUrl(): string | undefined {
 
 export default function HologramPage() {
   const [modelUrl, setModelUrl] = useState<string | undefined>(readInitialModelUrl);
+  const [alcoveColor, setAlcoveColor] = useState<string | undefined>(() =>
+    typeof window === "undefined" ? undefined : loadEnvironmentConfig()?.alcoveColor
+  );
   const utterChain = useRef<Promise<void>>(Promise.resolve());
   const liveChainRef = useRef<Promise<void>>(Promise.resolve());
+
+  // Alcove tint: read from the environmentConfig store and follow cross-window
+  // localStorage writes (e.g. the main window applying an incoming
+  // device-config) via the standard same-origin storage event.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== ENVIRONMENT_CONFIG_KEY) return;
+      setAlcoveColor(loadEnvironmentConfig()?.alcoveColor);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   useEffect(() => {
     if (!isHologramWindow()) return;
@@ -94,6 +113,9 @@ export default function HologramPage() {
       if (event.origin !== window.location.origin || event.source !== opener) return;
       const data = event.data as MainToHologramMessage | undefined;
       if (!data || data.origin !== hologramMessageOrigin) return;
+      if (data.kind === "model-url" || data.kind === "model-bytes") {
+        logDiagnostic(`holo-page model replace kind=${data.kind}`);
+      }
 
       switch (data.kind) {
         case "utter-bytes": {
@@ -193,7 +215,7 @@ export default function HologramPage() {
 
   return (
     <div className="hologram-stage">
-      <AvatarScene modelUrl={modelUrl} />
+      <AvatarScene modelUrl={modelUrl} environmentTint={alcoveColor} />
     </div>
   );
 }
