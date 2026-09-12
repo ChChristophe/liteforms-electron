@@ -602,9 +602,32 @@ et le log diagnostique `%APPDATA%\liteforms-web\liteforms-diagnostic.log` :
 
 ### 13.5 Travail restant hors POC (vers l'architecture finale)
 
-* persistance durable device-config dans `userData` (remplace le park) ;
+* ~~persistance durable device-config dans `userData` (remplace le park)~~
+  **FAIT (12/09/2026)** : `<userData>/config/device-config.json`, écriture
+  atomique tmp+rename, relecture au boot par pending-config, migration
+  one-shot localStorage → fichier côté renderer, fallback park mémoire en
+  dev sans env. Validé terrain (fichier présent et relu après restart).
+  Détail : commit « Persist device-config durably in userData ».
 * provisioning WiFi (`/api/provisioning/*`) — reste hors perimetre ;
 * detection automatique du token OpenClaw local (§7.1) ;
 * catalogue VRM en ligne alimentant `vrm-library/` ;
 * ports mood/pose (warnings actuels) ;
 * remplacement eventuel du polling par IPC.
+
+### 13.6 Architecture de stockage retenue (12/09/2026, decision produit)
+
+Trois mecanismes selon la nature de la donnee, tous dans `<userData>`
+(nom de dossier actuel : `liteforms-web`, herite de l'appId historique
+`org.liteforms.web` — a renommer avant toute distribution publique si
+decide, avec migration copie de dossier) :
+
+| Donnee | Stockage | Chemin |
+|---|---|---|
+| Config generale (device-config, character, session, environment) | **JSON atomique** (tmp + rename) via serveur Next/main process | `<userData>/config/` |
+| RAG / embeddings OpenClaw (gros volumes, requetes) | **SQLite** (better-sqlite3 + sqlite-vec), jamais JSON au-dela de ~10 Mo | `<userData>/` (a venir) |
+| Secrets (tokens, cles API, WiFi) | **`safeStorage`** (DPAPI Windows / keyring Linux) + fichier chiffre, fallback saisie manuelle | `<userData>/` (a venir) |
+
+Invariants : le renderer garde ses caches (localStorage/IndexedDB) mais la
+source de verite de la config est le fichier ; le main process cree les
+dossiers et passe les chemins par variables d'environnement ; aucune
+donnee sensible ne quitte l'appliance.
