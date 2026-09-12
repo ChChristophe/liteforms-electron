@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { POST, readPendingConfig } from "./route";
+import { POST } from "./route";
+import { readPendingConfig } from "@/lib/deviceConfig/pendingConfigStore";
 import { GET as getPending } from "../poc/pending-config/route";
 
 const validPayload = {

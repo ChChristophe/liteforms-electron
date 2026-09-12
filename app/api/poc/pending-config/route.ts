@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { clearPendingConfig, readPendingConfig } from "../../device-config/route";
+import { clearPendingConfig, readPendingConfig } from "@/lib/deviceConfig/pendingConfigStore";
 import { pocLog } from "@/lib/deviceConfig/pocLog";
 
 // POC-only channel (NOT part of the mobile contract v1): the Electron renderer

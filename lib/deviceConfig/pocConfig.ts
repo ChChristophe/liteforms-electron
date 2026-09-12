@@ -1,5 +1,3 @@
-import { NextResponse } from "next/server";
-
 // Contract Mobile<->Electron v1 — POST /api/device-config.
 // POC scope (POC.md §6): the payload is validated and parked in module memory;
 // the renderer picks it up via GET /api/poc/pending-config, stores it in its
@@ -47,10 +45,6 @@ type PocProviderConfig = {
 };
 
 const SECRET_FIELD_PATTERN = /^credential$|^api[-_]?key$|^token$|^password$|^secret$/i;
-
-export function buildDeviceConfigError(code: string, message: string, status = 400) {
-  return NextResponse.json({ ok: false, code, message }, { status });
-}
 
 export function isForbiddenSecretKey(key: string): boolean {
   return SECRET_FIELD_PATTERN.test(key);
@@ -167,4 +161,18 @@ function parseModelRef(value: unknown): PocModelRef | null {
   if (typeof v.id !== "string" || typeof v.fileName !== "string") return null;
   if (v.hash !== null && typeof v.hash !== "string") return null;
   return { id: v.id, fileName: v.fileName, hash: v.hash as string | null };
+}
+
+/** Safe summary of a validated payload: field names and IDs only, no values. */
+export function describeConfigSummary(config: {
+  character: { name: string; pronouns: string };
+  avatar: { mood?: string; modelRef?: { id: string; fileName: string } | null; pose?: Record<string, number> | null };
+  providers: { llm: { provider: string }; tts: { provider: string }; stt: { provider: string } };
+}): string {
+  const slots = ["llm", "tts", "stt"] as const;
+  return `character.name set=${config.character.name.length > 0} pronouns=${config.character.pronouns} ` +
+    `mood=${config.avatar.mood !== undefined ? "present" : "absent"} ` +
+    `modelRef=${config.avatar.modelRef ? config.avatar.modelRef.fileName : "none"} ` +
+    `pose.keys=${config.avatar.pose ? Object.keys(config.avatar.pose).join("+") || "0" : "none"} ` +
+    `providers=${slots.map((slot) => `${slot}:${config.providers[slot].provider}`).join(" ")}`;
 }

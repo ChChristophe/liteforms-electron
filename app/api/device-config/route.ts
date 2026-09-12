@@ -1,18 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { buildDeviceConfigError, parseDeviceConfig, type PocDeviceConfig } from "@/lib/deviceConfig/pocConfig";
-import { describeConfigSummary, pocLog } from "@/lib/deviceConfig/pocLog";
+import { parseDeviceConfig, describeConfigSummary } from "@/lib/deviceConfig/pocConfig";
+import { setPendingConfig } from "@/lib/deviceConfig/pendingConfigStore";
+import { pocLog } from "@/lib/deviceConfig/pocLog";
 
-// Module-memory POC state (non durable by design, see POC.md §3.2). The
-// standalone Next server is a single process in the packaged app, so this is
-// reliably shared between route handlers; userData persistence comes later.
-let pendingConfig: (PocDeviceConfig & { receivedAt: string }) | null = null;
-
-export function readPendingConfig() {
-  return pendingConfig;
-}
-
-export function clearPendingConfig() {
-  pendingConfig = null;
+function buildDeviceConfigError(code: string, message: string, status = 400) {
+  return NextResponse.json({ ok: false, code, message }, { status });
 }
 
 export async function POST(request: NextRequest) {
@@ -35,7 +27,7 @@ export async function POST(request: NextRequest) {
   // replaces the pending payload (the renderer skips already-applied configs
   // based on receivedAt).
   const receivedAt = new Date().toISOString();
-  pendingConfig = { ...parsed.config, receivedAt };
+  setPendingConfig(parsed.config, receivedAt);
 
   pocLog(
     `device-config POST :: accepted receivedAt=${receivedAt} warnings=${parsed.warnings.length} ` +
