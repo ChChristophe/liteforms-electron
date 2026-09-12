@@ -356,6 +356,31 @@ Mobile
 **Difficulté : 3–4/10 (configuration, plus un pari). Faisabilité : 9,5/10.**
 
 ### Phase 2 — POC config téléphone → live (⚠️ périmètre redéfini par le contrat mobile v1, §4.4)
+
+> **STATUT : TERMINÉ ET VALIDÉ TERRAIN (12/09/2026)** — voir `POC.md` §13
+> pour le bilan complet, les enseignements et la répartition
+> gardé/rejetté en architecture finale. Résumé :
+>
+> * **Fait et validé** : `GET /api/health` (bind LAN opt-in
+>   `LITEFORMS_SERVER_HOST`, port 43178), `POST /api/device-config`
+>   (validation sans confiance, idempotence, secrets rejetés, warnings
+>   mood/pose), apply renderer à chaud (character, alcove via
+>   `environmentConfig` + propagation `/hologram`, providers via mapping
+>   `stt->asr`/`endpoint->baseUrl` + bump `chatPanelKey`, VRM via
+>   bibliothèque locale `<userData>/vrm-library/`), lecture Mobile de la
+>   bibliothèque VRM réelle, swap VRM à chaud **sur le Looking Glass**
+>   (avec fix teardown session XR — invariant à conserver, `POC.md` §13.2).
+> * **Non fait (reporté, hors POC)** : provisioning hotspot (priorités 1–4
+>   ci-dessous), mood/pose (warnings), mDNS.
+> * **Choix de périmètre notables** : port renderer `43178` conservé
+>   (invariant d'origine Chromium pour la persistance — `POC.md` §13.3.2) ;
+>   `8080` reste le port de provisioning du contrat final, décision
+>   d'intégration ultérieure.
+> * **Suite naturelle (vers Phase 3)** : persistance durable
+>   device-config dans `userData` (le park en mémoire était POC),
+>   provisioning hotspot, détection automatique du token OpenClaw local
+>   (`POC.md` §7.1).
+
 **Objectif** : config maîtrisée depuis le téléphone, appliquée en direct.
 **Livrables** (contrat v1 verrouillé — l'app mobile existe déjà, tout le reste est côté Electron) :
 - provisioning **hotspot** (`Liteforms-Setup-XXXX`, `192.168.4.1:8080`, `POST /api/provisioning/wifi` + transition WiFi — cf. §4.4, priorités 1–4) ;

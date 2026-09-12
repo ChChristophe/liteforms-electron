@@ -1,8 +1,10 @@
 # POC Mobile -> Electron sur le LAN
 
-> Etat : plan + debut d'implementation (Phase A a 100 %, reception de Phase B
-> a 100 %, apply renderer de Phase B non demarre — voir §12).
-> Date : 10/09/2026.
+> Etat : **TERMINE ET VALIDE SUR LE TERRAIN (12/09/2026)** — Phases A, B et C
+> reussies de bout en bout (voir §12 et §13). Phase D remplacee par la
+> direction produit §7.1. Enseignements et reprise en architecture finale :
+> §13.
+> Date initiale du plan : 10/09/2026. Validation terrain : 12/09/2026.
 
 ## 1. But
 
@@ -282,6 +284,34 @@ lecteur cote main process ou un helper controle, avec une source et un chemin
 documentes. Une route Next ne doit pas lire arbitrairement le disque et le
 Mobile ne doit pas recevoir ce secret par defaut.
 
+### 7.1 Direction produit retenue (12/09/2026, decision post-POC)
+
+Objectif : **supprimer la saisie manuelle du token OpenClaw**. L'app Electron
+doit detecter automatiquement l'installation OpenClaw locale (Windows et
+Linux), lire le token depuis la configuration de cette installation, et
+l'utiliser dans sa propre configuration provider. Le token reste strictement
+local a l'appliance : il n'est jamais sert au Mobile ni sur le LAN ; le Mobile
+continue de ne recevoir que `configured` + masque via `openclaw-status` /
+`provider-status`.
+
+Contraintes retenues pour l'implementation future :
+
+* lecture cote **main process** uniquement (pas de lecture disque depuis une
+  route Next), avec chemin(s) documente(s) par OS — ex. fichier de config
+  OpenClaw dans le profil utilisateur (`~/.openclaw/` ou equivalent Windows) ;
+* helper controle unique (une fonction, une source), echec silencieux propre
+  si l'installation OpenClaw est absente : l'utilisateur garde la saisie
+  manuelle en fallback ;
+* le token lu n'apparait jamais dans les logs, diagnostics, reponses HTTP ou
+  erreurs ; la route diagnostique de token brut (§7, preuve 2) reste
+  interdite par defaut ;
+* decouverte multi-OS : detection du chemin de config par OS puis lecture ;
+  cette detection est une tache d'integration post-POC, hors contrat Mobile.
+
+Cette direction remplace la question ouverte « lire le fichier OpenClaw ou
+non ? » : oui, c'est le comportement cible de l'architecture finale, avec les
+garde-fous ci-dessus.
+
 ## 8. Phases d'execution
 
 ### Phase A — Joindre Electron depuis le Mobile
@@ -433,24 +463,35 @@ optionnel, jamais une regle du contrat v1.
 - Tests : `app/api/device-config/route.test.ts` (6 tests : payload complet,
   idempotence, version, secret rejete, prounom invalide, consume).
 
-### 12.2 Restant sur la phase B (apply renderer — pas commence)
+### 12.2 Restant sur la phase B (apply renderer — fait, 12/09/2026)
 
-1. Poll renderer de `GET /api/poc/pending-config` (intervalle ~2 s, module
-   client dedie type `lib/deviceConfig/pocClient.ts`).
-2..ecriture de `liteforms.poc.deviceConfig` dans le `localStorage` du renderer
-   + dedoublonnage par `receivedAt`.
-3. Application live des blocs recus :
-   - `character` -> `saveCharacterConfig()` + `setCharacter()` ;
-   - `environment.alcoveColor` -> chemin environmentConfig existant (tint via
-     l'evenement `storage` vers `/hologram`, deja en place) ;
-   - `providers` -> mapping `stt -> asr`, `endpoint -> baseUrl`, `voiceId` ->
-     voix du fournisseur, puis `saveSessionConfig()` + bump `chatPanelKey`
-     (remontage ChatPanel, chemin existant d'`app/page.tsx`) ;
-   - `avatar.modelRef` -> `indexedDbVrmRepository.load()` (un seul VRM local
-     existe encore : verifier que `fileName` correspond ; sinon warning) ;
-   - `mood`/`pose` -> recus mais non appliques (warnings deja cotes serveur).
-4. Journalisation diagnostique de l'application (jamais du payload brut).
-5. Test de non-regression cote renderer (lecture `localStorage` apres apply).
+Implementation :
+
+1. `lib/deviceConfig/pocClient.ts` : polling `GET /api/poc/pending-config`
+   (`?consume=1`, ~2 s, tolerance reseau : un seul log par panne, arret propre
+   via la fonction retournee) + dedoublonnage par `receivedAt` + ecriture
+   `liteforms.poc.deviceConfig` + re-lecture sauvegardee (boot restore).
+2. Application des blocs via les chemins existants : `character` ->
+   `saveCharacterConfig()` + `setCharacter()` ; `environment.alcoveColor` ->
+   nouveau store `lib/storage/environmentConfig.ts` (`saveEnvironmentConfig()`)
+   ; `providers` -> mapping `stt->asr`, `endpoint->baseUrl`, `voiceId` ->
+   voie du fournisseur (`voiceId` elevenlabs, `voice` ailleurs), realtimeVoice
+   local preserve, puis `saveSessionConfig()` + bump `chatPanelKey`
+   (meme chemin qu'`app/page.tsx` `handleUseCustom`) ; `avatar.modelRef` ->
+   `indexedDbVrmRepository.load()` avec verification `fileName` (warning sinon)
+   ; `mood`/`pose` recus mais non appliques.
+3. Journalisation renderer au format `[poc] <ISO> <message>` via le chemin
+   diagnostique du renderer (`logDiagnostic`, bridge -> meme fichier
+   liteforms-diagnostic.log) ; jamais le payload brut, seulement
+   receivedAt/blocs/warnings/resume non secret.
+4. Test renderer `lib/deviceConfig/pocClient.test.ts` (6 tests : ecriture et
+   relecture de la cle, projection des stores, dedoublonnage receivedAt,
+   conservation apres refresh + reapply boot, VRM mismatch, provider id
+   inconnu).
+5. `lib/deviceConfig/pocConfig.ts` doit reste chargeable par le renderer :
+   `buildDeviceConfigError` (NextResponse) est deplace dans la route,
+   `describeConfigSummary` reste isomorphe. 699 tests verts, lint 0 erreur,
+   tsc OK.
 
 ### 12.3 Test Phase A sur le terrain (a faire quand on veut)
 
@@ -461,3 +502,109 @@ optionnel, jamais une regle du contrat v1.
 - verifier depuis un telephone `http://<IP-LAN-Electron>:43178/api/health` ;
 - ensuite envoyer le payload §4 avec `POST /api/device-config`, l'observation
   des warnings dans la reponse, puis (apres 12.2) le apply live.
+
+> Fait le 12/09/2026 (voir §13.1 pour le detail des executions).
+
+## 13. Bilan final du POC (12/09/2026)
+
+### 13.1 Resultats de validation terrain
+
+Toutes les phases ont ete executees avec le package
+`release/win-unpacked/Liteforms.exe`, un telephone Android sur le meme WiFi,
+et le log diagnostique `%APPDATA%\liteforms-web\liteforms-diagnostic.log` :
+
+* **Phase A** : `GET /api/health` repond depuis le telephone (bind LAN opt-in
+  `LITEFORMS_SERVER_HOST=0.0.0.0`, port 43178) ; connexion Mobile affichee
+  « Connecté : Liteforms Desktop ».
+* **Phase B** : payload complet envoye depuis l'ecran review du Mobile ;
+  accuse `{ok, configVersion, appliedAt, warnings}` recu ; application a
+  chaud confirmee (nom/personnalite, couleur alcove, providers) ; warnings
+  mood/pose remontes comme prevu ; persistance apres refresh renderer OK.
+* **Phase C** : `GET /api/poc/vrms` retourne la bibliotheque locale
+  (10 fichiers) + builtin ; selection Mobile de plusieurs VRM reels
+  (LeafBoy.vrm, Orion.vrm, JokerDude.vrm) ; binaire servi par
+  `/api/poc/vrms/file` ; swap a chaud confirme sur le Looking Glass
+  (cycle `updateModel` -> `model replace` -> `teardown ending active xr
+  session` -> `model framed` -> `auto-enter attempt=1`).
+* Aucun secret ni payload brut dans les logs diagnostiques pendant toute la
+  campagne.
+
+### 13.2 Incidents rencontres et corrections
+
+1. **Bouton d'envoi Mobile non reactif apres le premier envoi** : `handleSend`
+   sans try/finally ; une exception laissait `sending=true` a jamais. Corrige
+   (finally + affichage de l'exception).
+2. **Crash Mobile `Coordonnees Desktop invalides: host="" port=0`** :
+   `registerDesktop` ne mettait pas host/port dans le store Zustand apres un
+   health check reussi ; la carte de statut appelait `buildDesktopUrl("", 0)`
+   pendant le rendu. Corrige (set host/port + garde d'affichage).
+3. **Liste VRM Mobile non scrollable** : contenu dans un `View` statique
+   au lieu du `ScrollView` standard des ecrans setup. Corrige.
+4. **Ecran noir Looking Glass apres swap de VRM** : la scene 3D etait
+   detruite/reconstruite sans terminer la session WebXR active ; le device
+   presentait depuis un contexte WebGL dispose. Corrige :
+   `renderer.xr.getSession()?.end()` avant teardown + auto-enter avec retry
+   borne. **Enseignement majeur** : tout remplacement de modele sur
+   l'hologramme doit passer par une terminaison propre de session XR —
+   regression a surveiller en architecture finale.
+5. **Build Next echoue sur export non-handler** : les fichiers de route Next
+   n'acceptent que des handlers HTTP exports ; l'etat pending a ete deplace
+   dans `lib/deviceConfig/pendingConfigStore.ts`. Regle a retenir pour toute
+   nouvelle route.
+6. **Anomalie benigne non corrigee** : `updateModel model-bytes bytes=0` —
+   le log lit la taille apres transfert transferable ; la taille reelle est
+   loguee par `vrms/file`. Purement cosmetique.
+
+### 13.3 Enseignements transférables a l'architecture finale
+
+1. **Le flux park-and-poll est une base viable** : serveur Next qui parque,
+   renderer qui poll — simple, robuste, debuggable via un seul log. Une
+   eventuelle pousse IPC main->renderer remplacera le polling, mais la
+   frontiere serveur/renderer (le serveur Next n'a PAS acces au
+   localStorage du renderer) restera vraie : le canal de transport vers
+   l'etat applique devra toujours passer par le renderer.
+2. **L'origine Chromium est un invariant** : garder le renderer sur
+   `127.0.0.1:43178` et rendre le LAN joignable par bind opt-in a preserve
+   toute la persistance existante. Toute integration future qui changerait
+   d'origine recreerait un probleme de stockage.
+3. **La validation sans confiance a fait ses preuves** : rejet de versions,
+   types, secrets a toute profondeur, idempotence, champs inconnus ignores,
+   warnings pour le non-supporte. Aucun payload hostile n'a passe. Ce
+   validateur (`pocConfig.ts`) est directement reprisable.
+4. **La redaction de logs fonctionne** : aucun secret, aucun payload brut,
+   chemins jamais complets. Le pattern `[poc] <ISO> <resume>` + bridge
+   renderer->fichier diagnostique unique est a generaliser.
+5. **La frontiere secret/non-secret tient** : le Mobile pilote tout sauf les
+   credentials ; les cles vivent et meurent cote appliance.
+6. **Le swap VRM a chaud exige la gestion de session XR** (cf. 13.2.4).
+7. **Les stores projetes fonctionnent** : mapper les blocs du contrat vers
+   les stores existants (character, environment, session, VRM) est le bon
+   pattern d'integration — le payload du contrat ne remplace jamais les
+   types internes, il les alimente.
+
+### 13.4 Ce qui est garde dans l'architecture finale
+
+| Element POC | Destination finale |
+|---|---|
+| Routes contractuelles (`/api/health`, `/api/device-config`, `/api/provider-status`) | Gardees telles quelles, promues contrat v1 stable |
+| Validateur `pocConfig.ts` (types, secrets, idempotence, warnings) | Garde, devient la validation de reference |
+| Mapping des blocs vers stores existants (pocClient apply) | Garde, remplace le park en memoire par une persistance durable (`userData`) |
+| Store `environmentConfig` (alcoveColor + propagation /hologram) | Garde tel quel |
+| Bibliotheque VRM locale `<userData>/vrm-library/` + routes metadata/fichier | Garde ; le futur catalogue en ligne alimentera ce meme dossier |
+| Teardown XR au swap de modele | Garde comme invariant du chemin hologramme |
+| Logging diagnostique redige (pattern [poc]) | Garde, generalise a toutes les routes device |
+| Bind LAN opt-in `LITEFORMS_SERVER_HOST` | Garde (par defaut desactive) |
+| Park en memoire du payload | **Remplace** par stockage durable dans `userData` (le park etait declare non durable des le plan §3.2) |
+| Polling renderer 2 s | Remplaçable par evenement IPC apres validation, a la discretion de l'integration |
+| Cle `liteforms.poc.deviceConfig` | Remplacee par le stockage durable ; la cle POC reste lisible comme historique |
+| Routes `/api/poc/*` | Retirees de toute distribution ; seules les routes contractuelles et la bibliotheque VRM (requalifiees) restent |
+| Route `openclaw-token` brut | Jamais implementee ; reste interdite (cf. §7.1) |
+
+### 13.5 Travail restant hors POC (vers l'architecture finale)
+
+* persistance durable device-config dans `userData` (remplace le park) ;
+* provisioning WiFi (`/api/provisioning/*`) — reste hors perimetre ;
+* detection automatique du token OpenClaw local (§7.1) ;
+* catalogue VRM en ligne alimentant `vrm-library/` ;
+* ports mood/pose (warnings actuels) ;
+* remplacement eventuel du polling par IPC.
