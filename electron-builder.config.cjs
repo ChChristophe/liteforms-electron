@@ -118,18 +118,18 @@ module.exports = {
   // via `extraResources`. electron-builder strips nested `node_modules` from
   // `extraResources`, which would break the standalone's `require("next")`.
   extraResources: nativeBridgeResources,
-  win: {
-    ...windowsSigningConfig,
-    icon: "resources/icon-256.png",
-    signExts: [".dll", ".node"],
-    target: ["nsis"],
+    win: {
+      ...windowsSigningConfig,
+      icon: "resources/icon-256.png",
+      signExts: [".dll", ".node"],
+      target: ["nsis"]
+    },
     nsis: {
       // Inbound firewall rules (provisioning 8080 + device API 43178):
       // created at install (elevated), removed at uninstall. The app itself
       // never elevates — win-unpacked logs the manual netsh instruction.
       include: "resources/installer.nsh"
-    }
-  },
+    },
   mac: {
     target: ["dmg"],
     category: "public.app-category.entertainment",
