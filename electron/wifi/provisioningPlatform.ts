@@ -265,7 +265,7 @@ Write-Output ("STATUS=" + $result.Status)
 // (CONNECT_FAILED while the profile is correct). Retry the whole script:
 // the `add` is idempotent (overwrites the profile) so replaying add+connect
 // is simpler than persisting add-success across attempts.
-const JOIN_RETRY_DELAYS_MS = [0, 3000, 6000] as const;
+const JOIN_RETRY_DELAYS_MS = [0, 5000, 10000, 15000] as const;
 
 // Exported for tests only (retry-delay injection).
 export function createWindowsProvisioning(
@@ -317,9 +317,12 @@ export function createWindowsProvisioning(
         `</security></MSM>`,
         `</WLANProfile>`
       ].join("");
-      // Up to 3 attempts (0s/3s/6s): a real adapter needs a few seconds after
-      // stopHotspot() before it accepts a connect. First OK wins; the script
-      // replays whole (the `add` is idempotent — see JOIN_RETRY_DELAYS_MS note).
+      // Up to 4 attempts (0s/5s/10s/15s): after StopTetheringAsync the WLAN
+      // stack needs time to release the adapter — ground data 13/09: a join
+      // that succeeds manually minutes later still failed through all three
+      // 0/3/6 s retries right after the hotspot stop. The script also WAITS
+      // for the association to actually complete (`netsh wlan connect` only
+      // queues the request; exit 0 never meant "connected").
       for (const delayMs of retryDelaysMs) {
         if (delayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -340,6 +343,17 @@ export function createWindowsProvisioning(
         // plain failure marker (never the reason string, it may embed the SSID).
         `$conn = netsh wlan connect name="${escapeXml(ssid)}" 2>&1 | Out-String; ` +
         `if ($LASTEXITCODE -ne 0) { Write-Output "CONNECT_FAILED"; exit 0 } ` +
+        // Wait for the association to complete (connect is asynchronous):
+        // poll the interface state for up to 12 s; success = our SSID shows
+        // as connected. Anything else (still searching, wrong network,
+        // auth failure) is reported as NOT_CONNECTED for the retry loop.
+        `$joined = $false; ` +
+        `for ($i = 0; $i -lt 12; $i++) { ` +
+        `Start-Sleep -Seconds 1; ` +
+        `$state = netsh wlan show interfaces 2>&1 | Out-String; ` +
+        `if ($state -match '(?m)^\\s*SSID\\s+:\\s+\\S+') { $joined = $true; break } ` +
+        `}; ` +
+        `if (-not $joined) { Write-Output "NOT_CONNECTED"; exit 0 } ` +
         `Write-Output "OK"`
         ], 45000);
         if (result.stdout.includes("OK")) {
