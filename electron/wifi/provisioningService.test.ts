@@ -54,12 +54,26 @@ const credentials: WifiCredentials = { ssid: "MaisonWifi", password: "pw", secur
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("provisioningService (state machine)", () => {
-  it("boots normally when credentials are already provisioned", async () => {
-    const service = createProvisioningService({ store: makeStore({ provisioned: true }), platform: makePlatform() });
+  it("boots normally when credentials are provisioned and the boot-v2 join succeeds", async () => {
+    const platform = makePlatform();
+    const service = createProvisioningService({ store: makeStore({ provisioned: true }), platform });
 
     expect(await service.begin()).toBeNull();
     expect(service.getState()).toBe("idle");
     expect(service.isProvisioning()).toBe(false);
+    // Boot v2: the join is retried with the stored credentials.
+    expect(platform.joinCalls).toHaveLength(1);
+  });
+
+  it("boot v2: a failed boot-v2 join returns the appliance to provisioning mode", async () => {
+    const platform = makePlatform({ async joinWifi() { return false; } });
+    const service = createProvisioningService({ store: makeStore({ provisioned: true }), platform });
+
+    const result = await service.begin();
+
+    // The Mobile must find the appliance again: hotspot (or LAN-direct) up.
+    expect(result).toEqual({ hotspotSsid: expect.stringMatching(/^Liteforms-Setup-\d{4}$/), gatewayIp: "192.168.4.1" });
+    expect(service.isProvisioning()).toBe(true);
   });
 
   it("starts the hotspot when not provisioned and reports gateway info", async () => {
@@ -142,7 +156,54 @@ describe("provisioningService (state machine)", () => {
     expect(await service.acceptWifi(credentials)).toBe(true);
     await flush();
     expect(store.saved).toHaveLength(1);
-    expect(service.getState()).toBe("idle");
+    // Boot v2 self-healing: a failed join must NOT boot normal after a
+    // relaunch — the appliance stays reachable in provisioning mode.
+    expect(service.getState()).toBe("provisioning");
+    expect(service.isProvisioning()).toBe(true);
+  });
+
+  it("tracks the last join result for GET /api/provisioning/status", async () => {
+    const platform = makePlatform();
+    const service = createProvisioningService({ store: makeStore(), platform });
+    await service.begin();
+
+    // Before any acceptance: null (the route answers "joining").
+    expect(service.getLastJoinResult()).toBeNull();
+
+    await service.acceptWifi(credentials);
+    // Transition running → joining.
+    expect(service.getLastJoinResult()).toBe("joining");
+    await flush();
+    // Join ok → joined.
+    expect(service.getLastJoinResult()).toBe("joined");
+  });
+
+  it("reports a failed join and re-arms a new acceptance (no dead hotspot)", async () => {
+    const joinResults = [false, true];
+    const platform = makePlatform({
+      async joinWifi(c: unknown) {
+        platform.joinCalls.push(c);
+        return joinResults.shift() ?? true;
+      }
+    });
+    const store = makeStore();
+    const service = createProvisioningService({ store, platform });
+    await service.begin();
+    platform.joinCalls.length = 0; // discard the boot-v2 join
+
+    expect(await service.acceptWifi(credentials)).toBe(true);
+    await flush();
+
+    expect(service.getLastJoinResult()).toBe("failed");
+    expect(service.getState()).toBe("provisioning");
+    // The hotspot is back up and a NEW transition is possible: the Mobile
+    // redoes the flow without a relaunch.
+    expect(platform.startCalls).toBe(2);
+    expect(await service.acceptWifi(credentials)).toBe(true);
+    await flush();
+    expect(store.saved).toHaveLength(2); // the redo persisted new credentials
+    expect(platform.joinCalls).toHaveLength(2);
+    expect(service.getLastJoinResult()).toBe("joined");
   });
 
   it("stop tears the hotspot down and resets state", async () => {
@@ -166,5 +227,17 @@ describe("provisioningService (state machine)", () => {
 
     const states = onStateChange.mock.calls.map((call) => call[0]);
     expect(states).toEqual(["starting", "provisioning", "switching", "idle"]);
+  });
+
+  it("emits a provisioning return after a failed join (state order)", async () => {
+    const onStateChange = vi.fn();
+    const platform = makePlatform({ async joinWifi() { return false; } });
+    const service = createProvisioningService({ store: makeStore(), platform, events: { onStateChange } });
+    await service.begin();
+    await service.acceptWifi(credentials);
+    await flush();
+
+    const states = onStateChange.mock.calls.map((call) => call[0]);
+    expect(states).toEqual(["starting", "provisioning", "switching", "provisioning"]);
   });
 });

@@ -337,7 +337,8 @@ describe("provisioning resources shipped with the app", () => {
 
   it("NSIS installer include exists and is wired into electron-builder", () => {
     const repoRoot = join(__dirname, "..", "..");
-    const nsh = join(repoRoot, "build", "installer.nsh");
+    // Versioned in resources/ (commit 6bd200b) — build/ is git-ignored.
+    const nsh = join(repoRoot, "resources", "installer.nsh");
     expect(existsSync(nsh)).toBe(true);
     const nshContent = readFileSync(nsh, "utf8");
     for (const port of ["8080", "43178"]) {

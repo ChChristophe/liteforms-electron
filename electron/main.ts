@@ -150,6 +150,11 @@ async function startPackagedNextServer() {
       LITEFORMS_VRM_LIBRARY_DIR: vrmLibraryPath(),
       // Durable device-config folder (POC.md §13.4), created below at startup.
       LITEFORMS_DEVICE_CONFIG_DIR: deviceConfigDirPath(),
+      // Persistent appliance identity (protocol §Identité): additive field of
+      // /api/health so the Mobile can re-match the appliance after the
+      // network transition. Same channel pattern as LITEFORMS_NETWORK_MODE
+      // (empty = identity unavailable, route omits the field).
+      LITEFORMS_DEVICE_ID: process.env.LITEFORMS_DEVICE_ID ?? "",
       // Contract v1 networkMode for /api/health: "provisioning" during the
       // first-boot provisioning flow, wifi/ethernet otherwise (decided by the
       // provisioning state machine before the Next server spawns).
@@ -628,6 +633,9 @@ app.whenReady().then(async () => {
   try {
     provisioning = await bootstrapProvisioning(writeDiagnostic);
     process.env.LITEFORMS_NETWORK_MODE = provisioning.service.isProvisioning() ? "provisioning" : "wifi";
+    // Channel the persistent deviceId to the Next /api/health route the same
+    // way as LITEFORMS_NETWORK_MODE (empty = storage failure, route omits it).
+    process.env.LITEFORMS_DEVICE_ID = provisioning.deviceId ?? "";
     // Ethernet detection is not wired yet (ponytail): a provisioned appliance
     // on a cable reports "wifi" — same value as before this change. Add OS
     // network-state probing when a real ethernet-only deployment exists.

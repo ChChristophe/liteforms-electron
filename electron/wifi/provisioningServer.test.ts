@@ -9,6 +9,7 @@ function makeService(overrides: Partial<ProvisioningService> = {}): Provisioning
     async begin() { return null; },
     async acceptWifi() { return true; },
     getState() { return "provisioning"; },
+    getLastJoinResult() { return null; },
     isProvisioning() { return true; },
     async stop() { /* noop */ },
     transition: null,
@@ -133,8 +134,48 @@ describe("provisioningServer (contract v1 routes)", () => {
       name: "Liteforms Desktop",
       protocolVersion: "1.0",
       configVersions: ["1.0"],
-      networkMode: "provisioning"
+      networkMode: "provisioning",
+      deviceId: "desktop-8f31"
     });
+  });
+
+  it("serves GET /api/provisioning/status with the exact protocol payload per phase", async () => {
+    // Before any acceptance the service reports null → the route answers
+    // "joining" (protocol: the Mobile must never see an unknown phase).
+    await start(makeService({ getLastJoinResult: () => null }), "desktop-8f31", 25425);
+    const joining = await request(25425, "/api/provisioning/status");
+    expect(joining.status).toBe(200);
+    expect(joining.body).toEqual({ ok: true, phase: "joining", deviceId: "desktop-8f31" });
+  });
+
+  it("status reports joined after a successful transition", async () => {
+    await start(makeService({ getLastJoinResult: () => "joined" }), "desktop-8f31", 25426);
+
+    const response = await request(25426, "/api/provisioning/status");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, phase: "joined", deviceId: "desktop-8f31" });
+  });
+
+  it("status reports failed after a failed join", async () => {
+    await start(makeService({ getLastJoinResult: () => "failed" }), "desktop-8f31", 25427);
+
+    const response = await request(25427, "/api/provisioning/status");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, phase: "failed", deviceId: "desktop-8f31" });
+  });
+
+  it("status stays a provisioning-only route (404 after close, wrong method)", async () => {
+    const server = createProvisioningServer(makeService(), { deviceId: "d" });
+    runningServers.push(server);
+    await server.start("127.0.0.1", 25428);
+    expect((await request(25428, "/api/provisioning/status")).status).toBe(200);
+
+    await server.close();
+
+    // Contract: the routes exist ONLY in provisioning mode.
+    await expect(request(25428, "/api/provisioning/status")).rejects.toThrow();
   });
 
   it("returns 404 for unknown routes and methods (route gate, /api/health excluded)", async () => {

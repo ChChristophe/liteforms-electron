@@ -1,8 +1,11 @@
-﻿// Provisioning HTTP server (contract v1). Runs in the MAIN process â€” not in
-// the Next server â€” because it must die with the provisioning mode and needs
+﻿// Provisioning HTTP server (contract v1). Runs in the MAIN process — not in
+// the Next server — because it must die with the provisioning mode and needs
 // safeStorage + the platform WiFi stack. Routes:
-//   GET  /api/provisioning/health â†’ 200 contract payload (announces the port)
-//   POST /api/provisioning/wifi   â†’ 202 on acceptance / 400 INVALID_WIFI_CONFIG
+//   GET  /api/provisioning/health → 200 contract payload (announces the port)
+//   POST /api/provisioning/wifi   → 202 on acceptance / 400 INVALID_WIFI_CONFIG
+//   GET  /api/provisioning/status → 200 {ok, phase, deviceId} (last join
+//         outcome, protocol 13/09/2026 — the Mobile polls it when it lost the
+//         connection before reading the 202)
 // The server is closed when provisioning mode ends: the routes exist ONLY in
 // provisioning mode (contract invariant). During provisioning this server also
 // serves GET /api/health (the Next server is not the reachable origin then),
@@ -49,7 +52,8 @@ export function createProvisioningServer(
         name: "Liteforms Desktop",
         protocolVersion: "1.0",
         configVersions: ["1.0"],
-        networkMode: "provisioning"
+        networkMode: "provisioning",
+        deviceId: options.deviceId
       });
       return;
     }
@@ -61,6 +65,16 @@ export function createProvisioningServer(
         name: "Liteforms Desktop",
         protocolVersion: "1.0",
         port: server ? (server.address() as { port: number }).port : DEFAULT_PROVISIONING_PORT
+      });
+      return;
+    }
+    if (url.pathname === "/api/provisioning/status" && request.method === "GET") {
+      // Protocol 13/09/2026: exact payload, no SSID/password ever. The
+      // hotspot may fall right after "joined" — answer fast, no awaits.
+      sendJson(response, 200, {
+        ok: true,
+        phase: service.getLastJoinResult() ?? "joining",
+        deviceId: options.deviceId
       });
       return;
     }
