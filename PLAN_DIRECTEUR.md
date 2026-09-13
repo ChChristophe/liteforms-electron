@@ -564,3 +564,19 @@ Mobile
 * **Validé terrain Windows** : hotspot WinRT réel start→stop (SSID `Liteforms-Setup-XXXX`, gateway ICS `192.168.137.1`), via le code compilé (`scripts/provisioning-live-check.cjs`).
 * **Pièges découverts** : (1) WinRT `IAsyncOperation` = `__ComObject` en PS 5.1, `.GetAwaiter()` n'existe PAS — passer par la projection `AsTask` de `System.Runtime.WindowsRuntime` (backtick dans single quotes) ; (2) le XML de profil WLAN exige `<connectionType>ESS</connectionType>` (sinon erreur schéma 0x80001 — l'ordre des éléments est forcé) ; (3) `netsh wlan connect` exige l'autorisation de localisation Windows 11 (sinon erreur 5) — la reconnexion WiFi réelle reste à tester avec un réseau présent ; (4) fichier partagé main/Next : la source canonique doit vivre sous `electron/` (contrainte `rootDir`), `lib/` ne fait que réexporter.
 * **Reste** : valider le join WiFi Windows sur un réseau réel + la transition complète Mobile→hotspot→WiFi maison ; helper privilégié Linux (polkit) avant le déploiement appliance ; détection Ethernet (actuellement `wifi` par défaut après provisioning).
+### Mise a jour 13/09/2026 - cycle complet valide sur Windows
+
+* **Cycle de bout en bout PASSE** (hotspot -> POST wifi -> persistance -> stop hotspot -> join OK -> relaunch -> boot normal 
+etworkMode:"wifi"). Le join WiFi Windows sur reseau reel fonctionne (SFR_29BF, WPA2PSK).
+* **Incidents et fixes root-cause** (tous terrain) :
+  1. SSID invisible : WinRT Band=Auto -> 5 GHz/DFS que le telephone n'affiche pas -> **forcer 2,4 GHz** (les deux plateformes) ;
+  2. Pare-feu : reseau "Public" + aucune regle -> blocage silencieux (le serveur repond en local, pas depuis le LAN) -> regles NSIS a l'install, sinon instruction netsh loggee ;
+  3. GET /api/health 404 sur le serveur de provisioning -> le mobile ne pouvait pas faire son health-check ; route ajoutee (
+etworkMode:"provisioning") ;
+  4. **Course relaunch/join** : le 202 rapide + relaunch 500 ms tuaient le process AVANT le join (log sans join result) -> le relaunch attend service.transition ;
+  5. Join echoue a 0,5 s de l'arret du hotspot (pile WLAN en transition) -> **retry 0/3/6 s** ;
+  6. Le serveur attendait la fin du join avant le 202 (timeout mobile) -> 202 a la persistance, transition en arriere-plan.
+* **Lecons qui changent le futur** : (a) sur hotspot/ICS, toute assertion "c'est en marche" doit etre verifiee cote radio (scan), pas juste API ; (b) les transitions reseau exigent des delais/retries - jamais de chaine immediate ; (c) le "fetch failed" cote mobile peut signifier un succes dont la reponse meurt avec le hotspot - distinguer dans l'UI mobile (a corriger) ; (d) tester le chemin de bout en bout AVANT de croire un etat "On".
+* **Linux blinde par transposition** (commit 5f8511a) : bande bg forcee, pin 192.168.4.1/24 + detection IP reelle (bug corrige : 
+mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4), retry join, polkit esources/linux/ pour l'image doree, ufw.
+* **Reste** : refonte UX du flow (feedback appliance, messages mobile, decouverte post-provisioning mDNS jarvis.local - l'etape "ressaisir l'IP" est refusee produit) ; checklist terrain Linux §6.11 ; mobile : provisionWifi doit utiliser les coordonnees saisies, pas le store.
