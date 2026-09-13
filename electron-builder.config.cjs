@@ -127,7 +127,7 @@ module.exports = {
       // Inbound firewall rules (provisioning 8080 + device API 43178):
       // created at install (elevated), removed at uninstall. The app itself
       // never elevates — win-unpacked logs the manual netsh instruction.
-      include: "build/installer.nsh"
+      include: "resources/installer.nsh"
     }
   },
   mac: {
