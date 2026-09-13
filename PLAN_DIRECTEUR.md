@@ -1,7 +1,42 @@
 # PLAN DIRECTEUR — Liteforms, l'appliance à hologramme (Mini-PC + Looking Glass)
 
 > Document de travail unique, issu de l'échange complet. Il sert de **base de référence** pour toute la suite du projet.
-> Dernière mise à jour : 10/09/2026 — **fix persistance des réglages packagés** (voir §1.6) ; support Linux du bridge vérifié (officiel), choix mobile **RN/Expo**, flux de fabrication (image dorée), estimations de portage mobile.
+> Dernière mise à jour : 13/09/2026 — **provisioning WiFi validé terrain de bout en bout sur Windows** (§5bis),
+> blindage Linux transposé, onboarding mobile « zéro IP » défini (§5ter). Voir aussi §10 (post-mortem provisioning).
+
+---
+
+## 0. ÉTAT AU 13/09/2026 — où on en est, où on va (à lire en premier)
+
+**Ce qui est terminé et validé terrain :**
+- **Phase 2 (POC config Mobile → live)** : validée 12/09 (POC.md §13) — health, device-config, apply à chaud, swap VRM sur le Looking Glass.
+- **Persistance durable device-config** + promotion des routes device (fin des canaux POC).
+- **Provisioning WiFi contrat v1, cycle complet validé sur Windows le 13/09** (§5bis) :
+  hotspot `Liteforms-Setup-XXXX` (2,4 GHz forcé) → Mobile envoie SSID/mot de passe →
+  persistance safeStorage → arrêt hotspot → **join WiFi maison réussi (retry 0/3/6 s)** →
+  relaunch attend la fin de la transition → boot normal `networkMode:"wifi"`.
+  Routes provisioning actives UNIQUEMENT en mode provisioning ; `GET /api/health` servi
+  aussi par le serveur de provisioning pendant ce mode (fix terrain).
+- **Pare-feu automatisé** : règles NSIS à l'installation (8080 + 43178) ; win-unpacked
+  logge l'instruction netsh exacte au lieu d'échouer silencieusement.
+- **Linux blindé par transposition des leçons Windows** (commit `5f8511a`) : bande bg
+  forcée, pin `192.168.4.1/24` + détection IP réelle (bug corrigé : `nmcli shared` donne
+  `10.42.0.1` par défaut), vérification post-hotspot, retry join, polkit `resources/linux/`
+  pour l'image dorée, ufw. **Checklist terrain Linux** : §5bis.4 — à exécuter au week-end Phase 1.
+
+**Le chantier en cours (décidé 13/09) — onboarding mobile « zéro IP » (§5ter) :**
+l'utilisateur lambda ne saisit JAMAIS d'IP/port. Flow : écran « rejoignez le réseau
+Liteforms » → écran « votre WiFi » → écran « connexion en cours/vérification » →
+directement les écrans de configuration (VRM, personnalité…). La saisie IP/port devient
+un écran « Paramètres → Connexion avancée » (dev/debug). Découverte post-provisioning et
+reconnexion automatique par **scan de sous-réseau + matching `deviceId`** (mDNS en
+optimisation ultérieure, quand builds EAS). Re-provisioning automatique au boot si le
+join échoue (l'appliance redevient trouvable). Patterns industriels de référence :
+Chromecast/Echo (hotspot temporaire), Sonos (découverte mDNS), recovery par bouton (§6.7).
+
+**Ensuite (ordre) :** portage web→Electron Phase 0 (groupe mood/pose prioritaire — ferme
+les warnings du contrat mobile), Phase 1 Linux sur le terrain, Phase 3 (autostart,
+mDNS, pairing), Phase 4 (sécurité durcie).
 
 ---
 
@@ -411,6 +446,119 @@ Mobile
 **Objectif** : fermer les failles du POC.
 **Livrables** : TLS local (certificat auto-signé éphémère) ; **rotation de token** ; gestion propriétaire/devices (le téléphone qui provisionne est l'owner ; les autres doivent se re-pairer) ; **jamais de retour des credentials** sur le réseau ; rate-limiting ; nettoyage du secret après appairage.
 **Difficulté : 3/10. Faisabilité : 9/10.**
+
+---
+
+## 5bis. Provisioning WiFi contrat v1 — implémenté et validé terrain Windows (13/09/2026)
+
+> Détail des incidents/leçons : §10 (post-mortem). Code : `electron/wifi/` (commits
+> `c5722ea`, `5f8511a`, `6bd200b`), protocole inchangé (contrat v1 §4.4).
+
+### 5bis.1 Architecture livrée
+- **Machine à états** (`provisioningService.ts`) : `idle → starting → provisioning → switching` ;
+  persistance safeStorage **avant** arrêt hotspot (invariant) ; idempotence ; 202 contractuel
+  envoyé **dès la persistance** (transition stop+join en arrière-plan, exposée via
+  `service.transition`) ; **le relaunch attend la fin complète de la transition**
+  (le tuer avant = join mort, incident terrain n°4).
+- **Serveur provisioning dédié** (main process, PAS Next) : `GET /api/provisioning/health`,
+  `POST /api/provisioning/wifi`, **`GET /api/health`** (`networkMode:"provisioning"`),
+  404 plat ailleurs ; meurt avec le mode provisioning (invariant contrat).
+- **Abstraction plateforme** (`provisioningPlatform.ts`) : Windows (Mobile Hotspot WinRT
+  via PowerShell, bande **2,4 GHz forcée**, join par profil WLAN + **retry 0/3/6 s**) /
+  Linux (`nmcli`, bande `bg` forcée, pin `192.168.4.1/24` puis **IP réelle détectée**,
+  vérification actif+IPv4 avant annonce, retry join).
+- **Pare-feu** : règles NSIS à l'install (`resources/installer.nsh`, 8080+43178) ;
+  win-unpacked : tentative au boot puis instruction netsh exacte dans le diagnostic ;
+  Linux : ufw via le même chemin privilégié, sinon instruction loggée.
+- **Privilèges Linux** : règle polkit `resources/linux/10-liteforms-network.rules` +
+  `install-polkit.sh` — portés par l'**image dorée** (§6.11), pas par l'AppImage.
+- **Stockage** : `<userData>/wifi-credentials.json`, mot de passe chiffré safeStorage
+  (DPAPI), jamais en clair/loggé/retourné (test dédié).
+
+### 5bis.2 Cycle validé terrain Windows (13/09, log diagnostic)
+`hotspot up (2,4 GHz) → Mobile: health OK → POST wifi → persisted → 202 → hotspot
+stopped → join result=ok (1er essai) → transition complete → relaunch →
+credentials already provisioned, normal boot → /api/health networkMode:"wifi"`.
+
+### 5bis.3 Limites connues (acceptées pour l'instant)
+- Windows : le hotspot WinRT exige une connexion internet source (Ethernet au test) —
+  contrainte OS, scénario « zéro réseau » = Linux natif (`nmcli` hotspot autonome) ;
+  Windows = environnement de dev (décision produit 13/09).
+- Mobile : « fetch failed » affiché alors que le 202 est parti (réponse coupée par la
+  mort du hotspot) ; `provisionWifi` lit le store au lieu des champs saisis.
+  → Les deux sont des items de la refonte §5ter.
+- L'utilisateur doit **ressaisir l'IP LAN** après provisioning → remplacé par la
+  découverte §5ter (refus produit explicite).
+
+### 5bis.4 Checklist validation terrain Linux (week-end Phase 1, mini-PC)
+1. `sudo sh resources/linux/install-polkit.sh` (image dorée) ;
+2. boot sans credentials → hotspot up, log `hotspot up gateway=...` ;
+3. `nmcli -t -f GENERAL.STATE,IP4.ADDRESS1 connection show Hotspot` → activated +
+   `192.168.4.1/24` ; SSID visible en 2,4 GHz ; `http://192.168.4.1:8080` OK ;
+4. cas dégradé A : pin refusé → l'IP réelle (ex. `10.42.0.1`) est annoncée dans le
+   diagnostic et saisie côté mobile ;
+5. cas dégradé B : règle polkit absente → hint polkit dans le diagnostic, pas de crash ;
+6. ufw actif → ports ouverts ou instruction `sudo ufw allow` loggée ; POST wifi OK ;
+7. join : 2,4 GHz, retry visible (0/3/6 s) si nécessaire, relaunch APRÈS la transition ;
+8. mode normal : 43178 joignable depuis le LAN ;
+9. Windows uninstall : règles netsh absentes après désinstallation.
+
+---
+
+## 5ter. Onboarding mobile « zéro IP » + reconnexion automatique (chantier en cours)
+
+**Décision produit (13/09)** : l'utilisateur lambda ne saisit **jamais** d'IP/port.
+La saisie manuelle déménage dans **Paramètres → Connexion avancée** (IP + port + test —
+usage dev/debug uniquement).
+
+### 5ter.1 Flux cible
+```
+Lancement (1er fois OU connexion perdue — même flow, zéro duplication)
+  → recherche automatique (scan si sur un WiFi)
+  → échec → ÉCRAN 1 « Rejoignez le réseau Liteforms-Setup-XXXX » (+ bouton réglages WiFi)
+  → ÉCRAN 2 « Votre WiFi » (SSID + mot de passe) → Envoyer
+  → ÉCRAN 3 « Connexion en cours »
+       · 202 → « Rejoignez maintenant votre WiFi maison » (l'appliance y va)
+       · mobile bascule sur le WiFi maison (réglages système, comme aujourd'hui)
+       · scan automatique → trouvé (deviceId matché) → « Connecté ✓ »
+  → écrans de configuration existants (VRM, personnalité, providers…)
+```
+
+### 5ter.2 Découverte : scan de sous-réseau (primaire), mDNS (ultérieur)
+- **Scan** : une fois le mobile sur le WiFi maison, balayage du /24 local
+  (`GET /api/health` sur x.x.x.1→254, timeouts courts, parallèle), match sur le
+  **`deviceId`** appris pendant le provisioning → zéro faux positif. Pur JS/Expo Go,
+  ~5 s. Sert aussi à la **reconnexion auto** (changement de FAI/box) : au lancement,
+  si le Desktop connu ne répond plus → scan → trouvé = reconnexion silencieuse,
+  coordonnées mises à jour ; introuvable = ÉCRAN 1.
+- **mDNS `jarvis.local`** : en optimisation quand on passera aux builds EAS (Phase 10) —
+  le scan reste le fallback. Décision : **scan d'abord** (validée 13/09).
+
+### 5ter.3 Auto-guérison côté appliance
+**Boot v2** : credentials présents → test join au boot → **échec → retour en mode
+provisioning (hotspot)** : l'appliance redevient trouvable, le mobile refait le flow.
+C'est le pattern recovery des appliances sans écran (avec le bouton physique §6.7 en
+filet ultime).
+
+### 5ter.4 Patterns industriels de référence (règles de l'art)
+Chromecast/Echo : canal de provisioning temporaire (hotspot) ✓ fait ; Sonos : découverte
+par le réseau sans saisie d'IP ✓ §5ter.2 ; état visible : **le Looking Glass est notre
+LED** — l'avatar/l'alcove peut refléter l'état provisioning (à explorer en §5ter) ;
+recovery : bouton physique §6.7.
+
+### 5ter.5 Modifications par repo (ordre d'exécution)
+1. `protocol/DEVICE_API.md` : `GET /api/provisioning/status`
+   (`{ok, phase:"joining"|"joined"|"failed", deviceId}` — le mobile sait si la transition
+   a réussi même s'il rate le 202) ; **`deviceId` stable et persistant** (clé de
+   matching du scan, aujourd'hui `"desktop"` en dur).
+2. Electron : deviceId persistant (userData), boot v2 (échec join → provisioning),
+   route status + tests.
+3. Mobile : moteur de découverte (scan /24 + matching deviceId, client réseau pur testé),
+   machine à états d'onboarding, 3 écrans du flow, `desktop.tsx` → « Connexion avancée »,
+   fixes au passage (provisionWifi lit les champs saisis ; messages distinguant
+   transition normale / vraie erreur).
+4. Validation terrain Windows : cycle complet + re-pairing (changement de WiFi simulé).
+5. Checklist Linux mise à jour.
 
 ---
 
