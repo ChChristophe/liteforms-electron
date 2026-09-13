@@ -517,9 +517,43 @@ localisation, pas d'AV tiers — tout est contrôlé).
    diagnostic et saisie côté mobile ;
 5. cas dégradé B : règle polkit absente → hint polkit dans le diagnostic, pas de crash ;
 6. ufw actif → ports ouverts ou instruction `sudo ufw allow` loggée ; POST wifi OK ;
-7. join : 2,4 GHz, retry visible (0/3/6 s) si nécessaire, relaunch APRÈS la transition ;
+7. join : 2,4 GHz, retry visible (0/5/10/15 s) si nécessaire, relaunch APRÈS la transition ;
 8. mode normal : 43178 joignable depuis le LAN ;
 9. Windows uninstall : règles netsh absentes après désinstallation.
+
+### 5bis.6 Cycle « profil WLAN pré-existant » validé (13/09, 18:56)
+
+Le cas réel de production (PC **déjà** connecté au WiFi maison, profil WLAN
+« tous les utilisateurs » existant) a été validé de bout en bout après deux
+fixes définitifs :
+1. **`netsh wlan connect` ne fait que demander** — le script attend maintenant
+   l'association réelle (sonde d'état 12 s par tentative, la ligne SSID
+   n'apparaît que connecté) ; retry étendu 0/5/10/15 s (commit `f8ecf24`) ;
+2. **Profil pré-existant dans une autre plage** : `add user=current` échoue
+   (« profil déjà existant ») → le connect s'exécute quand même ; si la
+   connexion échoue, le profil périmé est supprimé et la retry le recrée
+   (commit `34c8d22`).
+Log de validation : `join result=ok` au 1er essai → boot v2 → normal
+`networkMode:"wifi"` + `deviceId:"desktop-536f"`.
+
+**Rappel périmètre réseau (validé factuellement)** : Linux = hotspot autonome
+sans aucune connexion préexistante (`nmcli`), le scénario « appliance nue » est
+couvert ; Windows = le hotspot WinRT exige une connexion source (Ethernet ou
+WiFi), seul cas mort « zéro réseau » — accepté, Windows = dev (§5bis.5).
+
+### 5ter.6 Améliorations UX provisioning (demandées 13/09, à faire)
+
+1. **Champ mot de passe WiFi visible** (mobile, écran 2) : toggle afficher/masquer
+   (le `secureTextEntry` actuel rend les fautes de saisie indétectables — cause
+   probable de l'échec « mot de passe erroné » de 14:26/14:28) ;
+2. **Re-appairage depuis le mobile** : bouton « Refaire l'appairage » (réglages
+   avancés) qui déclenche côté Electron une nouvelle route
+   `POST /api/provisioning/reset` : purge de `wifi-credentials.json` + retour
+   mode provisioning (hotspot). Le mobile rebascule ensuite sur le flow
+   d'appairage. Remplace la manipulation manuelle du fichier (piège validé :
+   supprimer le fichier pendant que l'app tourne est ignoré — la lecture se
+   fait au boot uniquement). Boot v2 couvre déjà l'échec de join ; la route
+   reset couvre le « je veux changer de WiFi / repartir de zéro ».
 
 ---
 
@@ -740,7 +774,7 @@ etworkMode:"wifi"). Le join WiFi Windows sur reseau reel fonctionne (SFR_29BF, W
   3. GET /api/health 404 sur le serveur de provisioning -> le mobile ne pouvait pas faire son health-check ; route ajoutee (
 etworkMode:"provisioning") ;
   4. **Course relaunch/join** : le 202 rapide + relaunch 500 ms tuaient le process AVANT le join (log sans join result) -> le relaunch attend service.transition ;
-  5. Join echoue a 0,5 s de l'arret du hotspot (pile WLAN en transition) -> **retry 0/3/6 s** ;
+  5. Join echoue a 0,5 s de l'arret du hotspot (pile WLAN en transition) -> **retry 0/5/10/15 s + attente d'association reelle** (§5bis.6) ;
   6. Le serveur attendait la fin du join avant le 202 (timeout mobile) -> 202 a la persistance, transition en arriere-plan.
 * **Lecons qui changent le futur** : (a) sur hotspot/ICS, toute assertion "c'est en marche" doit etre verifiee cote radio (scan), pas juste API ; (b) les transitions reseau exigent des delais/retries - jamais de chaine immediate ; (c) le "fetch failed" cote mobile peut signifier un succes dont la reponse meurt avec le hotspot - distinguer dans l'UI mobile (a corriger) ; (d) tester le chemin de bout en bout AVANT de croire un etat "On".
 * **Linux blinde par transposition** (commit 5f8511a) : bande bg forcee, pin 192.168.4.1/24 + detection IP reelle (bug corrige : 
