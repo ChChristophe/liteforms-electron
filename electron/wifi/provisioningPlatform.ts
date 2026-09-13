@@ -334,15 +334,18 @@ export function createWindowsProvisioning(
         // user=current: the packaged app runs unelevated; "user=all" needs
         // admin and would fail on a stock Windows 11 install. A per-user
         // profile is enough — the provisioning session runs as that user.
+        // A pre-existing profile in ANOTHER scope (all-users from a manual
+        // run, group policy) makes `add` fail with "profile already exists"
+        // — ground-validated 13/09. That is NOT fatal: connect against the
+        // existing profile anyway; only if the connection itself fails do we
+        // delete the stale profile and let the next retry re-add it fresh.
         `$add = netsh wlan add profile filename="$p" user=current 2>&1 | Out-String; ` +
         `$addExit = $LASTEXITCODE; ` +
         `Remove-Item -Force $p -ErrorAction SilentlyContinue; ` +
-        `if ($addExit -ne 0) { Write-Output "ADD_FAILED"; exit 0 } ` +
-        // Location permission (Windows 11): netsh wlan connect needs WLAN read
-        // access — without it the OS returns error 5; we surface that as a
-        // plain failure marker (never the reason string, it may embed the SSID).
         `$conn = netsh wlan connect name="${escapeXml(ssid)}" 2>&1 | Out-String; ` +
-        `if ($LASTEXITCODE -ne 0) { Write-Output "CONNECT_FAILED"; exit 0 } ` +
+        `if ($LASTEXITCODE -ne 0) { ` +
+        `if ($addExit -ne 0) { netsh wlan delete profile name="${escapeXml(ssid)}" 2>&1 | Out-Null }; ` +
+        `Write-Output "CONNECT_FAILED"; exit 0 } ` +
         // Wait for the association to complete (connect is asynchronous):
         // poll the interface state for up to 12 s; success = our SSID shows
         // as connected. Anything else (still searching, wrong network,
