@@ -27,11 +27,16 @@ export function isWindows(): boolean {
   return process.platform === "win32";
 }
 
-export function createProvisioningPlatform(platform: NodeJS.Platform = process.platform): ProvisioningPlatform {
+export type DiagnosticLog = (line: string) => void;
+
+export function createProvisioningPlatform(
+  platform: NodeJS.Platform = process.platform,
+  log?: DiagnosticLog
+): ProvisioningPlatform {
   if (platform === "win32") {
-    return createWindowsProvisioning();
+    return createWindowsProvisioning(JOIN_RETRY_DELAYS_MS, log);
   }
-  return createLinuxProvisioning();
+  return createLinuxProvisioning(JOIN_RETRY_DELAYS_MS, log);
 }
 
 function run(command: string, args: string[], timeoutMs = 15000): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -65,38 +70,133 @@ function run(command: string, args: string[], timeoutMs = 15000): Promise<{ code
 
 // ---------------------------------------------------------------------------
 // Linux (production target): NetworkManager via nmcli. Requires a privileged
-// helper in production (polkit rule or systemd service — PLAN §6.2); the
-// direct nmcli calls below are the correct command surface for that helper.
+// helper in production (polkit rule — see resources/linux/, installed by the
+// golden image per PLAN §6.11, the AppImage cannot install system files).
+// Privilege failures are detected via exit code + stderr (no secrets) and
+// logged clearly so the appliance diagnostic points at the missing rule.
+//
+// Lessons transposed from the Windows field cycle (13/09/2026):
+// 1. Force 2.4 GHz band — `nmcli device wifi hotspot` with Band=Auto can pick
+//    5 GHz / DFS channels invisible to many phones → `band bg`.
+// 2. Gateway IP: the hotspot connection defaults to ipv4.method=shared
+//    (10.42.0.1/24) which breaks the contract announcing 192.168.4.1 → set
+//    the explicit address 192.168.4.1/24, then DETECT the actually assigned
+//    IP and return that, never an assumption.
+// 3. Post-hotspot verification: connection must be active AND have an IP
+//    before returning HotspotInfo, else null (LAN-direct fallback).
+// 4. Join uses the same retry pattern as Windows (3 attempts, 0/3/6 s):
+//    `connection up` right after `connection down Hotspot` can fail while
+//    the interface is still in transition.
 // ---------------------------------------------------------------------------
-function createLinuxProvisioning(): ProvisioningPlatform {
+const HOTSPOT_CON = "Hotspot";
+const HOTSPOT_GATEWAY_CIDR = "192.168.4.1/24";
+
+// Exported for tests only (retry-delay injection), same as Windows.
+export function createLinuxProvisioning(retryDelaysMs: readonly number[], log: DiagnosticLog = () => {}): ProvisioningPlatform {
+  function logPrivilegeIssue(stderr: string) {
+    if (/not authorized|access denied|not allowed|insufficient/i.test(stderr)) {
+      log(`nmcli privilege failure — install the polkit rule from resources/linux/10-liteforms-network.rules on the appliance (PLAN §6.11); stderr: ${stderr.trim().slice(0, 200)}`);
+    } else if (stderr.trim()) {
+      log(`nmcli failure (stderr: ${stderr.trim().slice(0, 200)})`);
+    }
+  }
+
+  // Reactivate the hotspot connection so modified properties apply
+  // (ipv4/band changes on an active connection do not take effect until re-up).
+  async function reapplyHotspot(): Promise<boolean> {
+    await run("nmcli", ["connection", "down", HOTSPOT_CON]);
+    const up = await run("nmcli", ["connection", "up", HOTSPOT_CON]);
+    if (up.code !== 0) {
+      logPrivilegeIssue(up.stderr);
+      return false;
+    }
+    return true;
+  }
+
+  // Post-hotspot verification: active AND an IPv4 assigned. Returns the real
+  // gateway address (prefix stripped), or null.
+  async function detectHotspotState(): Promise<{ active: boolean; ip: string | null }> {
+    const detail = await run("nmcli", [
+      "-t", "-f", "GENERAL.STATE,IP4.ADDRESS1", "connection", "show", HOTSPOT_CON
+    ]);
+    if (detail.code !== 0) {
+      return { active: false, ip: null };
+    }
+    let active = false;
+    let ip: string | null = null;
+    for (const line of detail.stdout.split("\n")) {
+      const [field, ...rest] = line.split(":");
+      const value = rest.join(":").trim();
+      if (/^GENERAL\.STATE$/i.test(field.trim())) {
+        active = /^activated( |$)/i.test(value);
+      } else if (/^IP4\.ADDRESS1$/i.test(field.trim()) && value) {
+        ip = value.replace(/\/\d+$/, "");
+      }
+    }
+    return { active, ip };
+  }
+
   return {
     async startHotspot(ssid, passphrase) {
-      // `nmcli device wifi hotspot ssid <ssid> password <pw>` assigns
-      // 192.168.4.1/24 to the hotspot interface by default.
-      const result = await run("nmcli", ["device", "wifi", "hotspot", "ssid", ssid, "password", passphrase]);
+      // `band bg` forces 2.4 GHz (validated Windows lesson: Band=Auto → 5 GHz
+      // invisible from phones). nmcli hotspot creates+activates connection
+      // "Hotspot" with ipv4.method=shared (10.42.0.1/24).
+      const result = await run("nmcli", [
+        "device", "wifi", "hotspot",
+        "ssid", ssid, "band", "bg", "password", passphrase
+      ]);
       if (result.code !== 0) {
+        logPrivilegeIssue(result.stderr);
         return null;
       }
-      return { ssid, gatewayIp: "192.168.4.1" };
+      // Honor the contract: pin the hotspot gateway to 192.168.4.1/24 with a
+      // manual (non-shared) ipv4 config, then reactivate to apply.
+      const modify = await run("nmcli", [
+        "connection", "modify", HOTSPOT_CON,
+        "ipv4.method", "manual", "ipv4.addresses", HOTSPOT_GATEWAY_CIDR
+      ]);
+      if (modify.code === 0) {
+        await reapplyHotspot();
+      }
+      // Return what is REALLY assigned, never an assumption: if the explicit
+      // config failed the connection keeps 10.42.0.1 (or whatever nmcli chose)
+      // and the user must enter that IP on the mobile side.
+      const state = await detectHotspotState();
+      if (!state.active || !state.ip) {
+        log("hotspot verification failed (connection not active or no IPv4) — falling back to LAN-direct");
+        return null;
+      }
+      return { ssid, gatewayIp: state.ip };
     },
 
     async stopHotspot() {
       // Turning the hotspot connection down releases the AP interface.
-      await run("nmcli", ["connection", "down", "Hotspot"]);
+      await run("nmcli", ["connection", "down", HOTSPOT_CON]);
     },
 
     async joinWifi({ ssid, password, security }) {
       const keyMgmt = security === "OPEN" ? "none" : "sae";
-      const add = await run("nmcli", [
+      const addArgs = [
         "connection", "add", "type", "wifi", "con-name", ssid, "ssid", ssid,
         "wifi-sec.key-mgmt", keyMgmt,
         ...(keyMgmt === "none" ? [] : ["wifi-sec.psk", password])
-      ]);
-      if (add.code !== 0) {
-        return false;
+      ];
+      // Up to 3 attempts (0s/3s/6s): the interface may still be transitioning
+      // right after `connection down Hotspot` (same anti-pattern as the
+      // Windows WLAN stack, validated 13/09/2026). Replays whole: a failed
+      // `add` may mean the connection already exists — keep going to `up`.
+      for (const delayMs of retryDelaysMs) {
+        if (delayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+        await run("nmcli", addArgs);
+        const up = await run("nmcli", ["connection", "up", ssid], 30000);
+        if (up.code === 0) {
+          return true;
+        }
+        logPrivilegeIssue(up.stderr);
       }
-      const up = await run("nmcli", ["connection", "up", ssid], 30000);
-      return up.code === 0;
+      return false;
     }
   };
 }
@@ -168,7 +268,10 @@ Write-Output ("STATUS=" + $result.Status)
 const JOIN_RETRY_DELAYS_MS = [0, 3000, 6000] as const;
 
 // Exported for tests only (retry-delay injection).
-export function createWindowsProvisioning(retryDelaysMs: readonly number[] = JOIN_RETRY_DELAYS_MS): ProvisioningPlatform {
+export function createWindowsProvisioning(
+  retryDelaysMs: readonly number[] = JOIN_RETRY_DELAYS_MS,
+  log: DiagnosticLog = () => {}
+): ProvisioningPlatform {
   return {
     async startHotspot(ssid, passphrase) {
       const script = winrtStartScript
@@ -252,4 +355,58 @@ function escapeXml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+}
+
+// ---------------------------------------------------------------------------
+// Firewall automation (chantier A) — ports 8080 (provisioning) + 43178
+// (device API). Windows production path: the NSIS installer creates the
+// rules (build/installer.nsh). These app-side helpers only cover the
+// no-installer case (win-unpacked) on Windows and ufw on Linux; they never
+// silently elevate (no UAC prompt at appliance boot — unacceptable) and on
+// failure they log the exact instruction the appliance owner/runbook runs.
+// ---------------------------------------------------------------------------
+export const PROVISIONING_FIREWALL_PORTS = [8080, 43178] as const;
+const FIREWALL_RULE_NAMES: Record<number, string> = {
+  8080: "Liteforms Provisioning Server",
+  43178: "Liteforms Device API"
+};
+
+export async function ensureWindowsFirewallPorts(log: DiagnosticLog = () => {}): Promise<boolean> {
+  let allOk = true;
+  for (const port of PROVISIONING_FIREWALL_PORTS) {
+    const result = await run("netsh", [
+      "advfirewall", "firewall", "add", "rule",
+      `name=${FIREWALL_RULE_NAMES[port]}`, "dir=in", "action=allow",
+      "protocol=TCP", `localport=${port}`
+    ]);
+    if (result.code === 0) {
+      log(`firewall :: inbound rule added for tcp ${port}`);
+    } else {
+      // Usually admin-required (win-unpacked launched non-elevated).
+      log(`firewall :: could not add rule for tcp ${port} (code ${result.code}). Run as admin: netsh advfirewall firewall add rule name="${FIREWALL_RULE_NAMES[port]}" dir=in action=allow protocol=TCP localport=${port}`);
+      allOk = false;
+    }
+  }
+  return allOk;
+}
+
+export async function ensureLinuxFirewallPorts(log: DiagnosticLog = () => {}): Promise<boolean> {
+  const status = await run("ufw", ["status"]);
+  if (status.code !== 0 || !/status:\s*active/i.test(status.stdout)) {
+    // ufw absent or inactive: nothing to open.
+    return true;
+  }
+  let allOk = true;
+  for (const port of PROVISIONING_FIREWALL_PORTS) {
+    const allow = await run("ufw", ["allow", `${port}/tcp`]);
+    if (allow.code === 0) {
+      log(`firewall :: ufw port tcp ${port} opened`);
+    } else {
+      // ufw requires root; the appliance golden image should bake these rules
+      // in (PLAN §6.11) — squelch stderr (no secrets, but keep it out of logs).
+      log(`firewall :: ufw refused tcp ${port} (needs root). Run on the appliance: sudo ufw allow ${port}/tcp`);
+      allOk = false;
+    }
+  }
+  return allOk;
 }

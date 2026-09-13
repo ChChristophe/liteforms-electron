@@ -6,7 +6,7 @@
 import { app, safeStorage } from "electron";
 import { mkdirSync } from "node:fs";
 import { resolveProvisioningPort } from "./wifiConfig";
-import { createProvisioningPlatform } from "./provisioningPlatform";
+import { createProvisioningPlatform, ensureLinuxFirewallPorts, ensureWindowsFirewallPorts } from "./provisioningPlatform";
 import { createProvisioningService, type ProvisioningService } from "./provisioningService";
 import { createProvisioningServer, DEFAULT_PROVISIONING_PORT } from "./provisioningServer";
 import { createWifiCredentialsStore, resolveWifiCredentialsPath } from "./wifiCredentialsStore";
@@ -35,12 +35,19 @@ export async function bootstrapProvisioning(writeDiagnostic: DiagnosticWriter): 
   }
 
   const store = createWifiCredentialsStore(resolveWifiCredentialsPath(configDir), safeStorage);
-  const platform = createProvisioningPlatform();
+  // The platform gets the diagnostic writer so nmcli/netsh privilege failures
+  // surface in the appliance diagnostic log (no secrets, exit code + stderr).
+  const platform = createProvisioningPlatform(process.platform, writeDiagnostic);
   const service = createProvisioningService({
     store,
     platform,
     events: { onLog: writeDiagnostic }
   });
+  // Firewall ports (chantier A, no-installer case): best effort, never
+  // elevates. On Windows production the NSIS installer creates the rules
+  // (build/installer.nsh); win-unpacked runs hit the admin-required path and
+  // the diagnostic carries the exact instruction instead of a UAC prompt.
+  void (process.platform === "win32" ? ensureWindowsFirewallPorts(writeDiagnostic) : ensureLinuxFirewallPorts(writeDiagnostic));
   const server = createProvisioningServer(service, { deviceId: "desktop", log: writeDiagnostic });
 
   // Contract answer `restartRequired: true`: after an accepted WiFi the

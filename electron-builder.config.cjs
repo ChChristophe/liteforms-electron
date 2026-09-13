@@ -122,7 +122,13 @@ module.exports = {
     ...windowsSigningConfig,
     icon: "resources/icon-256.png",
     signExts: [".dll", ".node"],
-    target: ["nsis"]
+    target: ["nsis"],
+    nsis: {
+      // Inbound firewall rules (provisioning 8080 + device API 43178):
+      // created at install (elevated), removed at uninstall. The app itself
+      // never elevates — win-unpacked logs the manual netsh instruction.
+      include: "build/installer.nsh"
+    }
   },
   mac: {
     target: ["dmg"],

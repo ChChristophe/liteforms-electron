@@ -4,14 +4,16 @@ import { createProvisioningServer } from "./provisioningServer";
 import type { ProvisioningService } from "./provisioningService";
 
 function makeService(overrides: Partial<ProvisioningService> = {}): ProvisioningService {
+  // Cast: Partial overrides add `| undefined` to the literal's property types.
   return {
     async begin() { return null; },
     async acceptWifi() { return true; },
     getState() { return "provisioning"; },
     isProvisioning() { return true; },
     async stop() { /* noop */ },
+    transition: null,
     ...overrides
-  };
+  } as ProvisioningService;
 }
 
 const runningServers: ReturnType<typeof createProvisioningServer>[] = [];

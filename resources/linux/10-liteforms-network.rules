@@ -1,0 +1,11 @@
+// Liteforms appliance polkit rule — allows the active (auto-logged) session
+// user to manage NetworkManager without a password prompt (provisioning nmcli
+// wifi hotspot / connection up|down). The AppImage cannot install system
+// files: bake this into the golden image via resources/linux/install-polkit.sh
+// (PLAN_DIRECTEUR.md §6.11, privileges §6.2).
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 &&
+        subject.active) {
+        return polkit.Result.YES;
+    }
+});
