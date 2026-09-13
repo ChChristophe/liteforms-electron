@@ -138,7 +138,8 @@ async function startPackagedNextServer() {
   if (host === "127.0.0.1") {
     writeDiagnostic("[next] LAN bind: off (loopback only)");
   } else {
-    writeDiagnostic(`[next] LAN bind: ${host}:${port} (mobile POC)`);
+    const source = process.env.LITEFORMS_SERVER_HOST === "0.0.0.0" || process.env.LITEFORMS_SERVER_HOST === "::" ? "explicit override" : "normal mode default";
+    writeDiagnostic(`[next] LAN bind: on (${host}:${port}, ${source})`);
   }
   const child = spawn(process.execPath, [serverPath], {
     cwd: standaloneDir,

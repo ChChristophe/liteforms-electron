@@ -256,14 +256,25 @@ describe("Electron build configuration", () => {
     expect(env.LITEFORMS_LLM_OPENAI_API_KEY).toBeUndefined();
   });
 
-  it("binds the Next server wide only through the explicit LAN opt-in", () => {
+  it("resolves the Next server host per mode (13/09 produit fix)", () => {
+    // No mode set (dev/tests): safe loopback default.
     expect(resolveServerHost({})).toBe("127.0.0.1");
-    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "127.0.0.1" })).toBe("127.0.0.1");
-    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "0.0.0.0" })).toBe("0.0.0.0");
-    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "192.168.1.5" })).toBe("127.0.0.1");
+    // Normal mode binds LAN by default so the Mobile discovery scan finds the appliance.
+    expect(resolveServerHost({ LITEFORMS_NETWORK_MODE: "wifi" })).toBe("0.0.0.0");
+    expect(resolveServerHost({ LITEFORMS_NETWORK_MODE: "ethernet" })).toBe("0.0.0.0");
+    // Provisioning stays loopback — the provisioning server fronts external traffic on 8080.
+    expect(resolveServerHost({ LITEFORMS_NETWORK_MODE: "provisioning" })).toBe("127.0.0.1");
+    // Explicit override wins over the mode default.
+    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "127.0.0.1", LITEFORMS_NETWORK_MODE: "wifi" })).toBe("127.0.0.1");
+    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "0.0.0.0", LITEFORMS_NETWORK_MODE: "provisioning" })).toBe("0.0.0.0");
+    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "::", LITEFORMS_NETWORK_MODE: "wifi" })).toBe("::");
+    // Any other explicit value falls back to the mode default.
+    expect(resolveServerHost({ LITEFORMS_SERVER_HOST: "192.168.1.5", LITEFORMS_NETWORK_MODE: "wifi" })).toBe("0.0.0.0");
 
     const lanEnv = createNextServerEnv({ baseEnv: { LITEFORMS_SERVER_HOST: "0.0.0.0" }, port: 43178 });
     expect(lanEnv.HOSTNAME).toBe("0.0.0.0");
+    const normalEnv = createNextServerEnv({ baseEnv: { LITEFORMS_NETWORK_MODE: "wifi" }, port: 43178 });
+    expect(normalEnv.HOSTNAME).toBe("0.0.0.0");
   });
 
   it("uses a shared child-process env allowlist for native helpers", () => {

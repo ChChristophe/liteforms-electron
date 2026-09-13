@@ -675,7 +675,7 @@ recovery : bouton physique §6.7.
 - [ ] `indexedDbVrmRepository` : `list()`/`loadByName()` (le payload n'a que `fileName`/`id`, `hash` nullable).
 - [ ] `applyDeviceConfig()` (réutilise setters + remontage ChatPanel) + événement live (polling d'abord).
 - [ ] Port commit 9 (mood) et ports 6/7 (pose) nécessaires au champ `avatar.*` (mapping §4.4).
-- [ ] Serveur Next en écoute LAN + gestion pare-feu (test Windows puis Linux).
+- [x] Serveur Next en écoute LAN + gestion pare-feu (test Windows puis Linux). **FAIT (13/09/2026, Windows)** — bind `0.0.0.0` par défaut en mode normal (`wifi`/`ethernet`) depuis 13/09 via `resolveServerHost()` ; provisioning reste loopback ; `LITEFORMS_SERVER_HOST` explicite prioritaire ; pare-feu 43178 déjà géré (NSIS + win-unpacked).
 
 **App mobile (Expo/React Native — ✅ PRÊTE, contrat `docs/contract` verrouillé, rien à faire côté mobile)** ce bloc devient un rappel de l'existant :
 - ✔️ Écrans config + provisioning (réglages WiFi système, iOS = instruction + ouverture réglages).
@@ -728,3 +728,4 @@ etworkMode:"provisioning") ;
 * **Linux blinde par transposition** (commit 5f8511a) : bande bg forcee, pin 192.168.4.1/24 + detection IP reelle (bug corrige : 
 mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4), retry join, polkit esources/linux/ pour l'image doree, ufw.
 * **Reste** : refonte UX du flow (feedback appliance, messages mobile, decouverte post-provisioning mDNS jarvis.local - l'etape "ressaisir l'IP" est refusee produit) ; checklist terrain Linux §6.11 ; mobile : provisionWifi doit utiliser les coordonnees saisies, pas le store.
+* **Bug 13/09 (post-provisioning, fix le jour meme)** : le bind LAN `0.0.0.0` du serveur Next etait "opt-in" POC (`LITEFORMS_SERVER_HOST`) → en mode normal l'appliance n'ecoutait que `127.0.0.1` → le scan de decouverte Mobile ne trouvait JAMAIS l'appliance, flux "zero IP" mort. Fix : bind `0.0.0.0` par defaut en mode normal, loopback en provisioning, override explicite prioritaire. **Lecon : un invariant POC "opt-in" peut devenir un bug produit — chaque defaut de POC doit etre reevalue au moment de la promotion (la difference n'est pas technique, elle est usage).**

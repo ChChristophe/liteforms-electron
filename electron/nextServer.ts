@@ -81,10 +81,23 @@ export function createNextServerEnv({ baseEnv = process.env, port, host = resolv
 
 // Renderer keeps loading 127.0.0.1 (loopback always answers a 0.0.0.0/LAN bind),
 // so the Chromium origin — and with it browser storage — stays unchanged.
-// Binding wide is an explicit opt-in for the mobile POC; never the default.
+// Contract v1 = trusted LAN only, never WAN-exposed (firewall rule on 43178 is
+// handled by the NSIS installer + win-unpacked instructions).
+// Per-mode defaults (13/09 produit): normal mode (wifi/ethernet) binds 0.0.0.0
+// so the Mobile discovery scan on 43178 can find the appliance — the POC-era
+// "opt-in" default broke the zero-IP flow on provisioned units. Provisioning
+// stays loopback: the provisioning server already fronts external traffic on
+// 8080; no double exposure. Explicit LITEFORMS_SERVER_HOST override wins
+// ("0.0.0.0"/"::" force wide, "127.0.0.1"/"localhost" force loopback).
 export function resolveServerHost(baseEnv: EnvMap = process.env): string {
   const declared = baseEnv.LITEFORMS_SERVER_HOST;
-  return declared === "0.0.0.0" || declared === "::" ? declared : "127.0.0.1";
+  if (declared === "0.0.0.0" || declared === "::") {
+    return declared;
+  }
+  if (declared === "127.0.0.1" || declared === "localhost") {
+    return "127.0.0.1";
+  }
+  return baseEnv.LITEFORMS_NETWORK_MODE === "wifi" || baseEnv.LITEFORMS_NETWORK_MODE === "ethernet" ? "0.0.0.0" : "127.0.0.1";
 }
 
 // Fixed port: Chromium keys localStorage/IndexedDB per origin (host + port), so
