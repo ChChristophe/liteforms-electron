@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { registerNativeBridgeIpc } from "./nativeBridge";
 import { redactDiagnosticLine } from "./diagnosticRedact";
 import { createNextServerEnv, isHttpServerUp, LITEFORMS_SERVER_PORT, resolveServerHost, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
+import { bootstrapProvisioning, type ProvisioningBootstrap } from "./wifi/provisioningBootstrap";
 import { hologramWindowBrowserOptions, isExternalUrl, isHologramWindowOpenRequest, resolveWindowOpenRequest } from "./windowOpenPolicy";
 
 const diagnosticLogChannel = "liteforms:diagnostic:log";
@@ -13,6 +14,7 @@ const preloadLoadedChannel = "liteforms:preload:loaded";
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let nextServerProcess: ChildProcess | null = null;
+let provisioning: ProvisioningBootstrap | null = null;
 let appUrl: string | null = null;
 let lastWindowBounds: Electron.Rectangle | null = null;
 let windowHiddenForBackground = false;
@@ -138,7 +140,6 @@ async function startPackagedNextServer() {
   } else {
     writeDiagnostic(`[next] LAN bind: ${host}:${port} (mobile POC)`);
   }
-
   const child = spawn(process.execPath, [serverPath], {
     cwd: standaloneDir,
     env: {
@@ -148,7 +149,11 @@ async function startPackagedNextServer() {
       // Local VRM library folder (POC Phase C), created below at startup.
       LITEFORMS_VRM_LIBRARY_DIR: vrmLibraryPath(),
       // Durable device-config folder (POC.md §13.4), created below at startup.
-      LITEFORMS_DEVICE_CONFIG_DIR: deviceConfigDirPath()
+      LITEFORMS_DEVICE_CONFIG_DIR: deviceConfigDirPath(),
+      // Contract v1 networkMode for /api/health: "provisioning" during the
+      // first-boot provisioning flow, wifi/ethernet otherwise (decided by the
+      // provisioning state machine before the Next server spawns).
+      LITEFORMS_NETWORK_MODE: process.env.LITEFORMS_NETWORK_MODE ?? "wifi"
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -616,6 +621,21 @@ app.whenReady().then(async () => {
     wireWebContentsDiagnostics(win, "child");
   });
 
+  // Contract v1 provisioning (PLAN §4.4/§8): the state machine decides —
+  // provisioned → normal boot; not provisioned → provisioning mode (hotspot or
+  // LAN-direct fallback) + provisioning HTTP server. Runs BEFORE the Next
+  // server spawn so LITEFORMS_NETWORK_MODE is known for /api/health.
+  try {
+    provisioning = await bootstrapProvisioning(writeDiagnostic);
+    process.env.LITEFORMS_NETWORK_MODE = provisioning.service.isProvisioning() ? "provisioning" : "wifi";
+    // Ethernet detection is not wired yet (ponytail): a provisioned appliance
+    // on a cable reports "wifi" — same value as before this change. Add OS
+    // network-state probing when a real ethernet-only deployment exists.
+  } catch (error) {
+    writeDiagnostic(`[provisioning] bootstrap failed (${String(error)}) — continuing in normal mode`);
+    process.env.LITEFORMS_NETWORK_MODE = "wifi";
+  }
+
   appUrl = await resolveAppUrl();
   createWindow(appUrl);
   ensureTray();
@@ -638,6 +658,8 @@ app.on("before-quit", () => {
   }
   stopNextServer();
   nativeBridgeService.dispose();
+  void provisioning?.dispose();
+  provisioning = null;
 });
 
 app.on("window-all-closed", () => {

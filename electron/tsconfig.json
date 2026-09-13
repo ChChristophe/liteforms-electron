@@ -19,6 +19,11 @@
     "nativeBridgeProbe.ts",
     "nextServer.ts",
     "preload.ts",
+    "wifi/provisioningBootstrap.ts",
+    "wifi/provisioningPlatform.ts",
+    "wifi/provisioningServer.ts",
+    "wifi/provisioningService.ts",
+    "wifi/wifiCredentialsStore.ts",
     "windowOpenPolicy.ts"
   ],
   "exclude": ["*.test.ts"]

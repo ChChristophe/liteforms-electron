@@ -179,7 +179,9 @@ Fichiers des commits comparés entre l'arbre Electron actuel, la base commune `7
 3. Le mobile rejoint le hotspot via les réglages WiFi système (iOS :
    instruction + ouverture des réglages, pas de sélection programmatique)
 4. L'app mobile demande le Wi-Fi maison (SSID + mot de passe) → POST à Electron
-5. Electron configure NetworkManager (Linux) → le Mini-PC rejoint le Wi-Fi
+5. Electron configure le WiFi cible (Linux : NetworkManager/nmcli ;
+   Windows : profil WLAN `netsh wlan add profile` ou API WinRT —
+   **voir §6.2, Windows doit aussi être fonctionnel**) → le poste rejoint le Wi-Fi
    maison, abandonne son hotspot
 6. Le téléphone rejoint le même Wi-Fi → communication LAN normale
    (découverte par **IP manuelle d'abord, mDNS ensuite**)
@@ -396,7 +398,10 @@ Mobile
 **Objectif** : l'expérience « on le branche, ça marche ».
 **Livrables** :
 - **autostart** Linux (`.desktop` → `~/.config/autostart`), mode provisioning sur 1er boot (machine à états `provisioned ?`) ;
-- **provisioning hotspot** : `nmcli device wifi hotspot` / `nmcli con up` → **helper privilégié (polkit ou service systemd + dialogue socket)** ;
+- **provisioning hotspot** — **double cible (décision 13/09/2026 : Linux principal, Windows fonctionnel requis)** :
+  - **Linux** : `nmcli device wifi hotspot` / `nmcli con up` → **helper privilégié (polkit ou service systemd + dialogue socket)** ;
+  - **Windows** : Mobile Hotspot WinRT (`NetworkOperatorTetheringManager`, §6.2) + fallback **LAN direct sans hotspot** (PC déjà sur le WiFi maison → `device-config` direct) ;
+  - interface commune derrière un même service de provisioning (détecter la plateforme, mêmes routes contrat v1).
 - **mDNS** (`jarvis.local`, avahi/bonjour-service) ;
 - **pairing complet** : génération `DEVICE_ID` + `PAIRING_SECRET`, stockage devices/phones/token dans `userData`, middleware de token ;
 - **auto-update** (AppImage/.deb, sign).
@@ -422,7 +427,10 @@ Mobile
 ### 6.2 Privilèges Wi-Fi / NetworkManager
 - `nmcli` (hotspot, rejoindre un réseau) = **root**.
 - Archive propre : règle **polkit** mini PC ou **service systemd** launcher que l'app pilote. Si bricolé → cassure en prod.
-- Windows (pour les tests locaux) : `netsh wlan` + pop-up pare-feu à accepter.
+- **Windows — solution fonctionnelle requise (décision 13/09/2026)** : la cible de production reste Linux, mais l'étape provisioning doit **aussi fonctionner sous Windows** (machine de dev + déploiements Windows éventuels). Deux chemins :
+  1. **Hotspot Windows** : `netsh wlan hostednetwork` est **mort** (pilotes modernes ne le supportent plus). Le chemin moderne est le **Mobile Hotspot WinRT** (`Windows.Networking.NetworkOperators.NetworkOperatorTetheringManager`, via projection PowerShell depuis l'Electron ou module natif) : SSID/passphrase configurables (`ConfigureAccessPointAsync`), activation/désactivation programmatiques. Sous-réseau ICS par défaut **`192.168.137.1/24`** (le contrat `192.168.4.1` est le cas Linux ; le client mobile prend l'hôte en **paramètre** — aucune rupture de contrat, l'Electron annonce/binder sur l'interface hotspot réelle). Requiert un adaptateur Wi-Fi compatible Wi-Fi Direct (la plupart des adaptateurs modernes).
+  2. **Fallback LAN direct** : si le hotspot Windows échoue (adaptateur incompatible, politique machine), le provisioning Windows se fait **sans hotspot** — PC déjà connecté au WiFi maison, le téléphone rejoint le même LAN et envoie directement `POST /api/device-config` (flux déjà validé terrain au POC). Le hotspot reste la voie « premier boot sans écran » ; sous Windows dev, le LAN direct est la voie pragmatique.
+  - Dans les deux cas : pop-up pare-feu à accepter (réseau privé), bind du serveur sur l'interface concernée.
 
 ### 6.3 Sécurité du POC (⚠️ écarté pour la v1 par le contrat mobile, §4.4)
 - **Contrat v1 (10/09)** : **deux routes sans auth** (`/api/provisioning/wifi` côté hotspot isolé ; `/api/device-config` et `/api/provider-status` sur le LAN local de confiance). Le token d'appairage planifié ici devient **phase 4** (avec TLS local, rotation, owner/devices).
@@ -510,10 +518,11 @@ Mobile
 - [ ] **Prioritaire** : week-end Phase 1 — Bridge 2.6.3 sur Ubuntu 24.04 X11, bascule du probe natif → websocket JS, énumération DRM du LKG Go en USB-C, build AppImage/.deb sur Linux.
 
 **Contrat mobile v1 (app mobile prête, §4.4, ordre du contrat)**
-- [ ] Hotspot temporaire `Liteforms-Setup-XXXX` + service provisioning sur `192.168.4.1:8080` (port = paramètre de config Electron, défaut 8080, annoncé dans `provisioning/health` — §4.3).
-- [ ] `GET /api/provisioning/health`.
-- [ ] `POST /api/provisioning/wifi` + stockage WiFi sécurisé (`safeStorage`) + transition vers le WiFi cible + fermeture du mode provisioning.
-- [ ] `GET /api/health` (réseau normal, `networkMode`, `configVersions`).
+- [x] Hotspot temporaire `Liteforms-Setup-XXXX` + service provisioning sur `192.168.4.1:8080` (port = paramètre de config Electron, défaut 8080, annoncé dans `provisioning/health` — §4.3). **FAIT (13/09/2026)** : `electron/wifi/` — hotspot WinRT Windows validé terrain (gateway `192.168.137.1`), Linux nmcli implémenté (helper privilégié §6.2 restant à valider terrain), fallback LAN-direct automatique.
+- [x] **Variante Windows du provisioning (fonctionnelle, §6.2)** : hotspot WinRT (`192.168.137.1`) ou fallback LAN direct — mêmes routes contrat v1. **FAIT + validé terrain 13/09/2026** (start/stop/join échec propre ; pattern AsTask obligatoire, voir §13).
+- [x] `GET /api/provisioning/health`. **FAIT (13/09/2026)** — serveur dédié main process, actif uniquement en mode provisioning.
+- [x] `POST /api/provisioning/wifi` + stockage WiFi sécurisé (`safeStorage`) + transition vers le WiFi cible (Linux `nmcli` / Windows profil WLAN) + fermeture du mode provisioning. **FAIT (13/09/2026)** — persistance AVANT arrêt hotspot ; relance auto après acceptation ; join Windows à retester avec réseau réel (netsh wlan connect exige l'autorisation de localisation Win11).
+- [x] `GET /api/health` (réseau normal, `networkMode`, `configVersions`). **FAIT (13/09/2026)** — `networkMode` via `LITEFORMS_NETWORK_MODE` décidé par la machine à états.
 - [ ] API `POST /api/device-config` (v1 sans token, idempotent, champs inconnus ignorés) + `GET /api/provider-status` (statuts masqués).
 - [ ] `indexedDbVrmRepository` : `list()`/`loadByName()` (le payload n'a que `fileName`/`id`, `hash` nullable).
 - [ ] `applyDeviceConfig()` (réutilise setters + remontage ChatPanel) + événement live (polling d'abord).
@@ -546,3 +555,12 @@ Mobile
 | App mobile (hors Electron) | projet séparé | 2–3 semaines d'agent |
 
 **Risques actualisés (30/08/2026)** : le driver LKG sous Linux n'est **plus** un pari (chemin officiel) — reste l'**énumération USB-C du LKG** et la meta de l'**image dorée**/hardware. Risque n°2 conservé : robustesse privilèges Wi-Fi. **Piège de portée** : 3 projets imbriqués → POC strict = Phase 1 + Phase 2.
+
+---
+
+## 10. Post-mortem provisioning WiFi contrat v1 (13/09/2026)
+
+* **Fait/validé** : routes provisioning (`electron/wifi/provisioningServer.ts`, main process, port configurable, actives UNIQUEMENT en mode provisioning), machine à états (`provisioningService.ts`, persistance AVANT arrêt hotspot, idempotente), stockage `safeStorage` (`wifiCredentialsStore.ts`), `networkMode` dans `/api/health`. Tests : 766 verts, lint 0 erreur, tsc OK.
+* **Validé terrain Windows** : hotspot WinRT réel start→stop (SSID `Liteforms-Setup-XXXX`, gateway ICS `192.168.137.1`), via le code compilé (`scripts/provisioning-live-check.cjs`).
+* **Pièges découverts** : (1) WinRT `IAsyncOperation` = `__ComObject` en PS 5.1, `.GetAwaiter()` n'existe PAS — passer par la projection `AsTask` de `System.Runtime.WindowsRuntime` (backtick dans single quotes) ; (2) le XML de profil WLAN exige `<connectionType>ESS</connectionType>` (sinon erreur schéma 0x80001 — l'ordre des éléments est forcé) ; (3) `netsh wlan connect` exige l'autorisation de localisation Windows 11 (sinon erreur 5) — la reconnexion WiFi réelle reste à tester avec un réseau présent ; (4) fichier partagé main/Next : la source canonique doit vivre sous `electron/` (contrainte `rootDir`), `lib/` ne fait que réexporter.
+* **Reste** : valider le join WiFi Windows sur un réseau réel + la transition complète Mobile→hotspot→WiFi maison ; helper privilégié Linux (polkit) avant le déploiement appliance ; détection Ethernet (actuellement `wifi` par défaut après provisioning).
