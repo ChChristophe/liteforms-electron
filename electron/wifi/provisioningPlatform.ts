@@ -328,7 +328,10 @@ export function createWindowsProvisioning(
         "-NoProfile", "-NonInteractive", "-Command",
         `$p = Join-Path $env:TEMP ("wlan-" + [guid]::NewGuid().ToString() + ".xml"); ` +
         `Set-Content -Path $p -Value @'\n${profileXml}\n'@ -Encoding UTF8; ` +
-        `$add = netsh wlan add profile filename="$p" user=all 2>&1 | Out-String; ` +
+        // user=current: the packaged app runs unelevated; "user=all" needs
+        // admin and would fail on a stock Windows 11 install. A per-user
+        // profile is enough — the provisioning session runs as that user.
+        `$add = netsh wlan add profile filename="$p" user=current 2>&1 | Out-String; ` +
         `$addExit = $LASTEXITCODE; ` +
         `Remove-Item -Force $p -ErrorAction SilentlyContinue; ` +
         `if ($addExit -ne 0) { Write-Output "ADD_FAILED"; exit 0 } ` +

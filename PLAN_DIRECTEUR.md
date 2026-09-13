@@ -490,6 +490,24 @@ credentials already provisioned, normal boot → /api/health networkMode:"wifi"`
 - L'utilisateur doit **ressaisir l'IP LAN** après provisioning → remplacé par la
   découverte §5ter (refus produit explicite).
 
+### 5bis.5 Limites Windows « machine standard » (audit 13/09, post-cycle vert)
+
+Windows reste environnement de dev ; voici ce qui casse (ou pas) sur un
+Windows 11 stock, et les mitigations en place :
+
+| Point | Gravité | État |
+|---|---|---|
+| Réseau classé « Public » par défaut | 🔴 contourné | règles pare-feu créées **sans** `profile=` → s'appliquent à tous les profils (comportement netsh documenté) ; NSIS les pose à l'install |
+| **Localisation Windows 11 désactivée** (`netsh wlan` erreur 5) | 🔴 non contournable côté app | boot v2 → retour provisioning → le Mobile voit `phase:"failed"` avec le message dédié « activez la localisation » (13/09) ; l'app ne peut pas activer la localisation elle-même (aucune API autorisée) |
+| Pop-up pare-feu 1er run (win-unpacked) | 🟡 contourné | avec l'installeur NSIS : pas de pop-up (règles pré-créées) ; win-unpacked : instruction netsh loggée |
+| Antivirus tiers (pare-feu applicatif) | 🟡 documenté | ignore les règles Windows ; détection possible via diagnostic (joignable en local, pas du LAN) ; FAQ |
+| Mini-PC sans adaptateur WiFi (Ethernet only) | 🟡 structurel | pas de hotspot WinRT possible → fallback LAN-direct only ; sur Linux `nmcli` gère le hotspot autonome |
+| `netsh wlan add profile user=all` exige admin | 🟢 corrigé 13/09 | `user=current` (l'app tourne en utilisateur de session) |
+
+**Conclusion** : le chemin Windows est viable en dev/test avec installeur ;
+la production appliance reste Linux (image dorée §6.11 : polkit, ufw, pas de
+localisation, pas d'AV tiers — tout est contrôlé).
+
 ### 5bis.4 Checklist validation terrain Linux (week-end Phase 1, mini-PC)
 1. `sudo sh resources/linux/install-polkit.sh` (image dorée) ;
 2. boot sans credentials → hotspot up, log `hotspot up gateway=...` ;
