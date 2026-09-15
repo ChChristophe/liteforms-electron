@@ -16,6 +16,7 @@ import {
   ENVIRONMENT_CONFIG_KEY,
   loadEnvironmentConfig,
 } from "@/lib/storage/environmentConfig";
+import { MOOD_CONFIG_KEY, loadMoodConfig } from "@/lib/storage/moodConfig";
 
 let sharedAudioContext: AudioContext | null = null;
 let liveAnalyser: AnalyserNode | null = null;
@@ -86,6 +87,9 @@ export default function HologramPage() {
   const [alcoveColor, setAlcoveColor] = useState<string | undefined>(() =>
     typeof window === "undefined" ? undefined : loadEnvironmentConfig()?.alcoveColor ?? undefined
   );
+  const [mood, setMood] = useState<string | undefined>(() =>
+    typeof window === "undefined" ? undefined : loadMoodConfig()?.mood ?? undefined
+  );
   const utterChain = useRef<Promise<void>>(Promise.resolve());
   const liveChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -96,6 +100,18 @@ export default function HologramPage() {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== null && event.key !== ENVIRONMENT_CONFIG_KEY) return;
       setAlcoveColor(loadEnvironmentConfig()?.alcoveColor ?? undefined);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Mood preset: same cross-window pattern as the alcove tint — the main
+  // renderer writes liteforms.moodConfig (from device-config apply) and the
+  // hologram window picks it up live, without reloading the VRM.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== MOOD_CONFIG_KEY) return;
+      setMood(loadMoodConfig()?.mood ?? undefined);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -215,7 +231,7 @@ export default function HologramPage() {
 
   return (
     <div className="hologram-stage">
-      <AvatarScene modelUrl={modelUrl} environmentTint={alcoveColor} />
+      <AvatarScene modelUrl={modelUrl} environmentTint={alcoveColor} expressionPreset={mood} />
     </div>
   );
 }

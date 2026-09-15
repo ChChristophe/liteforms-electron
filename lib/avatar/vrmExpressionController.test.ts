@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   applyVrmExpression,
+  applyVrmMoodPreset,
   applyVrmMouthFrame,
   clearVrmMouth,
   getVrmExpressionDebugSummaries,
@@ -47,6 +48,41 @@ describe("VRM expression controller", () => {
     expect(expressionManager.setValue).toHaveBeenCalledWith("happy", 1);
     expect(expressionManager.resetValues).toHaveBeenCalled();
     expect(expressionManager.update).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the previous preset before applying a new mood preset", () => {
+    const expressionMap = {
+      happy: { binds: [{}] },
+      sad: { binds: [{}] }
+    };
+    const expressionManager = { setValue: vi.fn(), resetValues: vi.fn(), update: vi.fn(), expressionMap };
+
+    applyVrmMoodPreset(expressionManager, "sad");
+    applyVrmMoodPreset(expressionManager, "happy");
+
+    expect(expressionManager.resetValues).toHaveBeenCalledTimes(2);
+    const sadCall = expressionManager.setValue.mock.calls.find(([name]) => name === "sad");
+    const happyCalls = expressionManager.setValue.mock.calls.filter(([name]) => name === "happy");
+    expect(sadCall).toEqual(["sad", 1]);
+    expect(happyCalls.at(-1)).toEqual(["happy", 1]);
+  });
+
+  it("falls back to a fully neutral face for null or unknown presets", () => {
+    const expressionMap = {
+      happy: { binds: [{}] },
+      blink: { binds: [{}] }
+    };
+    const expressionManager = { setValue: vi.fn(), resetValues: vi.fn(), update: vi.fn(), expressionMap };
+
+    applyVrmMoodPreset(expressionManager, "happy");
+    applyVrmMoodPreset(expressionManager, null);
+
+    expect(expressionManager.resetValues).toHaveBeenCalledTimes(2);
+    expect(expressionManager.setValue.mock.calls.filter(([name]) => name === "happy")).toHaveLength(1);
+
+    applyVrmMoodPreset(expressionManager, "ecstatic");
+    expect(expressionManager.resetValues).toHaveBeenCalledTimes(3);
+    expect(expressionManager.setValue.mock.calls.filter(([name]) => name === "ecstatic")).toHaveLength(0);
   });
 
   it("lists expression names from the loaded VRM expression map", () => {

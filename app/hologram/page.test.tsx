@@ -2,6 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
+import { saveMoodConfig, MOOD_CONFIG_KEY } from "@/lib/storage/moodConfig";
 import { saveEnvironmentConfig, ENVIRONMENT_CONFIG_KEY } from "@/lib/storage/environmentConfig";
 import HologramPage from "./page";
 
@@ -44,5 +45,37 @@ describe("hologram page alcove tint", () => {
     });
 
     expect(captured.props?.environmentTint).toBe("#22aa55");
+  });
+});
+
+describe("hologram page mood preset", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    captured.props = null;
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("reads the mood preset from the moodConfig store at mount", () => {
+    saveMoodConfig({ mood: "happy" });
+
+    render(<HologramPage />);
+
+    expect(captured.props?.expressionPreset).toBe("happy");
+  });
+
+  it("applies mood preset changes from the storage event without a reload", () => {
+    render(<HologramPage />);
+
+    expect(captured.props?.expressionPreset).toBeUndefined();
+
+    saveMoodConfig({ mood: "sad" });
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: MOOD_CONFIG_KEY }));
+    });
+
+    expect(captured.props?.expressionPreset).toBe("sad");
   });
 });

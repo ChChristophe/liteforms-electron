@@ -9,6 +9,7 @@ import {
 } from "./pocClient";
 import { loadCharacterConfig } from "@/lib/storage/characterConfig";
 import { loadSessionConfig } from "@/lib/storage/sessionConfig";
+import { loadMoodConfig } from "@/lib/storage/moodConfig";
 import type { StoredVrm, VrmRepository } from "@/lib/storage/vrmRepository";
 
 const LEGACY_DEVICE_CONFIG_KEY = "liteforms.poc.deviceConfig";
@@ -47,10 +48,12 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
   characters: object[];
   sessions: object[];
   models: StoredVrm[];
+  moods: (string | null)[];
 } {
   const characters: object[] = [];
   const sessions: object[] = [];
   const models: StoredVrm[] = [];
+  const moods: (string | null)[] = [];
   const vrm: StoredVrm = { arrayBuffer: new ArrayBuffer(1), fileName: "lobsterEdit.vrm" };
   const repo: VrmRepository = {
     load: () => Promise.resolve(vrm),
@@ -61,11 +64,13 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
     characters,
     sessions,
     models,
+    moods,
     hooks: {
       setCharacter: (c) => characters.push(c),
       onSessionConfig: (s) => sessions.push(s),
       onVrmModel: (v) => models.push(v),
       getVrmRepository: () => repo,
+      onMoodPreset: (m) => moods.push(m),
       ...overrides
     }
   };
@@ -96,9 +101,10 @@ describe("POC renderer apply (Phase B §12.2)", () => {
 
     const result = await applyPocDeviceConfig({ ...validPayload, receivedAt: "r1" }, hooks);
 
-    expect(result.warnings).toContainEqual(
+    expect(result.warnings).not.toContainEqual(
       "avatar.mood accepted but not applied in this POC (mood port pending)"
     );
+    expect(result.applied).toContain("mood");
     expect(characters).toHaveLength(1);
     expect(characters[0]).toMatchObject({ name: "Clawdia", pronouns: "SHE" });
     expect(models[0]?.fileName).toBe("lobsterEdit.vrm");
@@ -114,6 +120,26 @@ describe("POC renderer apply (Phase B §12.2)", () => {
     expect(tts.baseUrl).toBe("https://api.elevenlabs.io/v1");
     expect(tts.voiceId).toBe("CwhRBWXzGAHq8TQ4Fs17");
     expect(session?.llm).toMatchObject({ provider: "openai", baseUrl: "https://api.openai.com/v1" });
+  });
+
+  it("calls the mood hook and writes the moodConfig store (null resets)", async () => {
+    const { hooks, moods } = createHooks();
+
+    const result = await applyPocDeviceConfig(
+      { ...validPayload, receivedAt: "r-mood" },
+      hooks
+    );
+    expect(result.applied).toContain("mood");
+    expect(moods).toEqual(["happy"]);
+    expect(loadMoodConfig()).toEqual({ version: 1, mood: "happy" });
+
+    const cleared = await applyPocDeviceConfig(
+      { ...validPayload, receivedAt: "r-mood2", avatar: { ...validPayload.avatar, mood: null as unknown as string } },
+      hooks
+    );
+    expect(cleared.applied).toContain("mood");
+    expect(moods).toEqual(["happy", null]);
+    expect(loadMoodConfig()).toEqual({ version: 1, mood: null });
   });
 
   it("deduplicates by receivedAt: an already-stored payload is not re-applied", async () => {

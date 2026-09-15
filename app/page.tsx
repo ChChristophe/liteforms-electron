@@ -17,6 +17,7 @@ import type { BaseProviderConfig } from "@/lib/llm";
 import type { AsrConfig, RealtimeVoiceConfig, TtsConfig } from "@/lib/speech";
 import { saveSessionConfig, loadSessionConfig } from "@/lib/storage/sessionConfig";
 import { saveCharacterConfig, loadCharacterConfig } from "@/lib/storage/characterConfig";
+import { loadMoodConfig } from "@/lib/storage/moodConfig";
 import { createIndexedDbVrmRepository } from "@/lib/storage/indexedDbVrmRepository";
 import type { VrmRepository } from "@/lib/storage/vrmRepository";
 import { startPocDeviceConfigPolling, type PocApplyHooks } from "@/lib/deviceConfig/pocClient";
@@ -52,6 +53,9 @@ export default function HomePage() {
   const [bridgeConnected, setBridgeConnected] = useState<boolean | undefined>(undefined);
   const [bridgeDisplay, setBridgeDisplay] = useState<LookingGlassDisplayBounds | undefined>(undefined);
   const [isBridgeBannerDismissed, setIsBridgeBannerDismissed] = useState(false);
+  const [mood, setMood] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : loadMoodConfig()?.mood ?? null
+  );
   const showBridgeBanner = bridgeConnected === false && !isBridgeBannerDismissed;
   const {
     hologramActive,
@@ -121,7 +125,8 @@ export default function HomePage() {
       onVrmModel: (stored) => {
         setModelUrl(URL.createObjectURL(new Blob([stored.arrayBuffer])));
         setRestoredVrmFileName(stored.fileName);
-      }
+      },
+      onMoodPreset: (preset) => setMood(preset)
     });
 
     let stopPocDeviceConfigPolling: (() => void) | undefined;
@@ -302,7 +307,13 @@ export default function HomePage() {
             Voir en holo
           </button>
         )}
-        {!hologramActive && <AvatarScene modelUrl={modelUrl} hideVrButton />}
+        {!hologramActive && (
+          <AvatarScene
+            modelUrl={modelUrl}
+            hideVrButton
+            expressionPreset={mood ?? undefined}
+          />
+        )}
       </section>
       <ChatPanel
         key={chatPanelKey}

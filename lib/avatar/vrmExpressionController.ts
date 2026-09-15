@@ -91,6 +91,20 @@ export function resetVrmExpressions(expressionManager: VrmExpressionManagerLike 
   expressionManager.update?.();
 }
 
+export function applyVrmMoodPreset(
+  expressionManager: VrmExpressionManagerLike | undefined,
+  preset: string | undefined | null
+) {
+  if (!expressionManager) {
+    return;
+  }
+
+  resetVrmExpressions(expressionManager);
+  if (preset && hasBoundVrmExpression(expressionManager, preset)) {
+    applyVrmExpression(expressionManager, preset, 1);
+  }
+}
+
 export function getVrmExpressionNames(expressionManager: VrmExpressionManagerLike | undefined) {
   if (!expressionManager?.expressionMap) {
     return [];

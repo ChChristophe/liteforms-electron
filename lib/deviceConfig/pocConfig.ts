@@ -6,6 +6,8 @@
 // Secrets are rejected outright: the contract forbids provider keys, pairing
 // tokens and WiFi passwords in this payload.
 
+import { VALID_MOOD_PRESETS } from "@/lib/storage/moodConfig";
+
 export type PocCharacterConfig = {
   name: string;
   pronouns: "HE" | "SHE" | "THEY";
@@ -99,10 +101,17 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
       })
     ) as Record<string, number>
     : undefined;
-  if (avatar.mood !== undefined && typeof avatar.mood !== "string") {
-    return { error: "INVALID_FIELD", message: "avatar.mood must be a string when present" };
+  // avatar.mood: null ("Défaut" on the Mobile) and absent are both legal; only
+  // a valid preset name is kept, anything else becomes a warning (never a 400).
+  let mood: string | undefined;
+  const rawMood = avatar.mood as unknown;
+  if (rawMood !== undefined && rawMood !== null) {
+    if (typeof rawMood === "string" && (VALID_MOOD_PRESETS as readonly string[]).includes(rawMood)) {
+      mood = rawMood;
+    } else {
+      warnings.push(`avatar.mood \`${String(rawMood)}\` ignored (unknown preset)`);
+    }
   }
-  if (avatar.mood !== undefined) warnings.push("avatar.mood accepted but not applied in this POC (mood port pending)");
   if (pose && Object.keys(pose).length > 0) warnings.push("avatar.pose accepted but not applied in this POC (pose port pending)");
 
   return {
@@ -111,7 +120,7 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
       configVersion: "1.0",
       character,
       avatar: {
-        ...(avatar.mood !== undefined ? { mood: avatar.mood as string } : {}),
+        ...(mood !== undefined ? { mood } : {}),
         ...(modelRef ? { modelRef } : {}),
         ...(pose ? { pose } : {})
       },

@@ -30,6 +30,7 @@ import {
 } from "@/lib/avatar/lookingGlassIntegration";
 import type { LookingGlassFocalPoint } from "@/lib/avatar/lookingGlassIntegration";
 import { applyEnvironmentTint, loadEnvironmentGlb } from "@/lib/avatar/environmentLoader";
+import { applyVrmMoodPreset } from "@/lib/avatar/vrmExpressionController";
 import {
   configureRendererShadows,
   configureLightShadow,
@@ -80,6 +81,7 @@ type AvatarSceneProps = {
   modelUrl?: string;
   hideVrButton?: boolean;
   environmentTint?: string;
+  expressionPreset?: string;
 };
 
 const DEFAULT_MODEL_URL = "/models/lobsterEdit.vrm";
@@ -260,10 +262,11 @@ function formatVector3(value: Vector3): string {
   return `${value.x.toFixed(3)},${value.y.toFixed(3)},${value.z.toFixed(3)}`;
 }
 
-export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false, environmentTint }: AvatarSceneProps) {
+export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false, environmentTint, expressionPreset }: AvatarSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const environmentObjectRef = useRef<Object3D | undefined>(undefined);
   const environmentTintRef = useRef<string | undefined>(environmentTint);
+  const expressionPresetRef = useRef<string | undefined>(expressionPreset);
   const vrmRef = useRef<VRM | undefined>(undefined);
   const idleAnimatorRef = useRef<VrmIdleAnimator | undefined>(undefined);
   const loaderRef = useRef<GLTFLoader | undefined>(undefined);
@@ -276,6 +279,13 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
     environmentTintRef.current = environmentTint;
     applyEnvironmentTint(environmentObjectRef.current, environmentTint || undefined);
   }, [environmentTint]);
+
+  // Apply the incoming mood preset (from the moodConfig store) to the live
+  // VRM; the ref keeps the latest preset for the post-load pass below.
+  useEffect(() => {
+    expressionPresetRef.current = expressionPreset;
+    applyVrmMoodPreset(vrmRef.current?.expressionManager, expressionPreset);
+  }, [expressionPreset]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -617,6 +627,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
               console.warn(`Liteforms avatar lip sync: missing VRM 0.0 mouth morph target ${targetName}.`);
             }
           }
+          applyVrmMoodPreset(loadedVrm.expressionManager, expressionPresetRef.current);
           setStatus("");
           modelLoaded = true;
           resize();

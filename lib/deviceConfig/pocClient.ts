@@ -4,6 +4,7 @@ import { parseDeviceConfig, describeConfigSummary, type PocDeviceConfig } from "
 import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import { saveCharacterConfig } from "@/lib/storage/characterConfig";
 import { saveEnvironmentConfig } from "@/lib/storage/environmentConfig";
+import { saveMoodConfig } from "@/lib/storage/moodConfig";
 import { loadSessionConfig, saveSessionConfig, type SessionConfig } from "@/lib/storage/sessionConfig";
 
 export type PocSessionConfig = Omit<SessionConfig, "version">;
@@ -38,6 +39,8 @@ export type PocApplyHooks = {
   getVrmRepository(): VrmRepository | null;
   /** Live model URL hook (Blob URL from the stored VRM). */
   onVrmModel(stored: StoredVrm): void;
+  /** Live mood preset hook (null resets to the neutral face). */
+  onMoodPreset(preset: string | null): void;
 };
 
 export type PocApplyResult = { applied: string[]; warnings: string[] };
@@ -193,6 +196,14 @@ export async function applyPocDeviceConfig(
   saveEnvironmentConfig({ alcoveColor: config.environment.alcoveColor });
   applied.push("environment");
 
+  // avatar.mood -> live preset hook + moodConfig store; the localStorage write
+  // relays the change to /hologram via the same-origin storage event. Mobile
+  // "Défaut" sends null, which resets the avatar to a neutral face.
+  const mood = config.avatar.mood ?? null;
+  hooks.onMoodPreset(mood);
+  saveMoodConfig({ mood });
+  applied.push("mood");
+
   // providers -> mapped session stores; the caller remounts the ChatPanel.
   const mapped = mapPocProvidersToEndpoints(config.providers);
   warnings.push(...mapped.warnings);
@@ -234,7 +245,7 @@ export async function applyPocDeviceConfig(
     }
   }
 
-  // mood/pose are deliberately not applied (server warnings already list them).
+  // pose is deliberately not applied (server warnings already list it).
 
   return { applied, warnings };
 }
