@@ -164,7 +164,7 @@ Fichiers des commits comparés entre l'arbre Electron actuel, la base commune `7
 | 5 | `95b2784` | Meilleur idle loop + foot place | 3 | 9 | équivalent déjà présent : `VrmIdleAnimator` (`vrmAnimationLoader.ts`) + `vrmFootPlantLock.ts` |
 | 6 | `ff26033` | Depth VRM dans l'alcove | 2 | 10 | à retuner pour le viewport `/hologram` |
 | 7 | `050c195` | Recenter hips animation | 2 | 10 | `vrmAnimationLoader.ts` |
-| 8 | `a5c88bb` | **Alcove color** | ✅ | **fait** (4 effectif) | porté en workspace + `/hologram` (voir 1.5) |
+| 8 | `a5c88bb` | **Alcove color** | ✅ | **fait** (4 effectif) | porté + `/hologram` (§1.5) ; **fix 15/09** (`8461e38`) : le port écrivait le tint sur l'`AmbientLight` (rendu dilué, jalons jamais intenses) — root cause : `applyEnvironmentTint` absent du loader ; rétabli web-parité (`environmentLoader`/`AvatarScene`/`environmentConfig` strict hex+null ; matériau teinté, map supprimée, ambient fixe `#fff6e5`) |
 | 9 | `bf978b2` | Emotion en face | 4 | 9 | nouveau `moodConfig` (storage) + `vrmExpressionController` + UI 2 fenêtres |
 | 10 | `922809e` | Fix bugs core | 3 | 8 | re-corriger manuellement un `ChatPanel` fortement divergé |
 | 11 | `5086b76` | **Bundle OpenWakeWord** | 7 | 8 | gros kit (moteur ort + modèles `.onnx` + worklet + featureFlags) ; `onnxruntime-web@1.21` **déjà en deps** ; threading wasm → voir §6.4 |
@@ -541,19 +541,27 @@ sans aucune connexion préexistante (`nmcli`), le scénario « appliance nue » 
 couvert ; Windows = le hotspot WinRT exige une connexion source (Ethernet ou
 WiFi), seul cas mort « zéro réseau » — accepté, Windows = dev (§5bis.5).
 
-### 5ter.6 Améliorations UX provisioning (demandées 13/09, à faire)
+### 5ter.6 Améliorations UX provisioning (demandées 13/09 — **faites le 15/09**)
 
-1. **Champ mot de passe WiFi visible** (mobile, écran 2) : toggle afficher/masquer
-   (le `secureTextEntry` actuel rend les fautes de saisie indétectables — cause
-   probable de l'échec « mot de passe erroné » de 14:26/14:28) ;
+> Statut 15/09/2026 : les deux items sont **implémentés et testés** (vitest
+> verts des deux côtés). prototypes terrain à refaire au prochain cycle
+> Windows (le reset relaunch → provisioning est couvert par tests, pas
+> encore par un cycle réel).
+
+1. **Champ mot de passe WiFi visible** (mobile, écran 2) : ~~toggle~~ **œil
+   classique dans le champ** (show/hide, `secureTextEntry` togglé, état
+   local jamais persisté) — commit Mobile `36eef4e`. Le `secureTextEntry`
+   rendait les fautes de saisie indétectables — cause probable de l'échec
+   « mot de passe erroné » de 14:26/14:28 ;
 2. **Re-appairage depuis le mobile** : bouton « Refaire l'appairage » (réglages
-   avancés) qui déclenche côté Electron une nouvelle route
-   `POST /api/provisioning/reset` : purge de `wifi-credentials.json` + retour
-   mode provisioning (hotspot). Le mobile rebascule ensuite sur le flow
-   d'appairage. Remplace la manipulation manuelle du fichier (piège validé :
-   supprimer le fichier pendant que l'app tourne est ignoré — la lecture se
-   fait au boot uniquement). Boot v2 couvre déjà l'échec de join ; la route
-   reset couvre le « je veux changer de WiFi / repartir de zéro ».
+   avancés) déclenche la nouvelle route **`POST /api/provisioning/reset`**
+   (protocole 15/09, `protocol/DEVICE_API.md`) : purge de `wifi-credentials.json`
+   (route Next mode normal + env `LITEFORMS_WIFI_CREDENTIALS_PATH`,
+   commit Electron `468bc67`) → watcher main React (file répérée = appelé une fois) →
+   relaunch → **retour mode provisioning au boot v2**. Le mobile rebascule sur le flow
+   d'appairage (reset local best-effort, échec réseau post-envoi = transition
+   normale). Mobile commits `36eef4e`/`5ecaa68` (91 tests verts) ; Electron
+   807 tests verts + tsc.
 
 ---
 
@@ -780,4 +788,21 @@ etworkMode:"provisioning") ;
 * **Linux blinde par transposition** (commit 5f8511a) : bande bg forcee, pin 192.168.4.1/24 + detection IP reelle (bug corrige : 
 mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4), retry join, polkit esources/linux/ pour l'image doree, ufw.
 * **Reste** : refonte UX du flow (feedback appliance, messages mobile, decouverte post-provisioning mDNS jarvis.local - l'etape "ressaisir l'IP" est refusee produit) ; checklist terrain Linux §6.11 ; mobile : provisionWifi doit utiliser les coordonnees saisies, pas le store.
+
+### Mise a jour 15/09/2026 - re-appairage manuel (reset) livre
+
+* **Fait** : `POST /api/provisioning/reset` (protocole 15/09) — route Next mode normal
+  (env `LITEFORMS_WIFI_CREDENTIALS_PATH`, purge dure unlinkSync, idempotente) + watcher
+  `fs.watch` main (`electron/wifi/resetRelaunchWatcher.ts`) : fichier supprime → relaunch →
+  boot v2 sans credentials → provisioning (hotspot). Mobile : œil dans le champ mot de
+  passe (écran 2) + bouton « Refaire l'appairage » branché sur la route (resetProvisioning
+  best-effort, echec reseau post-envoi = transition normale, jamais une erreur).
+  Commits : `468bc67` (Electron), `36eef4e`/`5ecaa68` (Mobile). Tests : 807 verts
+  Electron, 91 verts Mobile, tsc 0 erreur des deux côtés.
+* **Lecon** : un fichier « lu au boot seulement » (piège du 13/09) exige un chemin
+  d'evenement runtime pour etre purge a chaud — d'ou le watcher fs.watch filtre sur le
+  nom de fichier, fire-once, arme uniquement en mode normal.
+* **Reste** : cycle terrain reel du reset (appelle depuis le LAN → relaunch → hotspot
+  revu par le Mobile) — au prochain cycle Windows ; degrade si fs.watch indisponible
+  (purge effective, provisioning au prochain redemarrage manuel).
 * **Bug 13/09 (post-provisioning, fix le jour meme)** : le bind LAN `0.0.0.0` du serveur Next etait "opt-in" POC (`LITEFORMS_SERVER_HOST`) → en mode normal l'appliance n'ecoutait que `127.0.0.1` → le scan de decouverte Mobile ne trouvait JAMAIS l'appliance, flux "zero IP" mort. Fix : bind `0.0.0.0` par defaut en mode normal, loopback en provisioning, override explicite prioritaire. **Lecon : un invariant POC "opt-in" peut devenir un bug produit — chaque defaut de POC doit etre reevalue au moment de la promotion (la difference n'est pas technique, elle est usage).**
