@@ -29,7 +29,7 @@ import {
   withLookingGlassTarget,
 } from "@/lib/avatar/lookingGlassIntegration";
 import type { LookingGlassFocalPoint } from "@/lib/avatar/lookingGlassIntegration";
-import { loadEnvironmentGlb } from "@/lib/avatar/environmentLoader";
+import { applyEnvironmentTint, loadEnvironmentGlb } from "@/lib/avatar/environmentLoader";
 import {
   configureRendererShadows,
   configureLightShadow,
@@ -83,7 +83,6 @@ type AvatarSceneProps = {
 };
 
 const DEFAULT_MODEL_URL = "/models/lobsterEdit.vrm";
-const DEFAULT_AMBIENT_TINT = "#fff6e5";
 const DEFAULT_IDLE_ANIMATION_URL = "/animations/idle_loop.vrma";
 const ALCOVE_URL = "/models/Alcove.glb";
 const IMPORTED_MODEL_VERTICAL_OFFSET = 0.025;
@@ -263,21 +262,19 @@ function formatVector3(value: Vector3): string {
 
 export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false, environmentTint }: AvatarSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const ambientLightRef = useRef<AmbientLight | null>(null);
-  const environmentTintRef = useRef(environmentTint);
+  const environmentObjectRef = useRef<Object3D | undefined>(undefined);
+  const environmentTintRef = useRef<string | undefined>(environmentTint);
   const vrmRef = useRef<VRM | undefined>(undefined);
   const idleAnimatorRef = useRef<VrmIdleAnimator | undefined>(undefined);
   const loaderRef = useRef<GLTFLoader | undefined>(undefined);
   const warnedMissingMorphsRef = useRef(new Set<string>());
   const [status, setStatus] = useState("Loading avatar");
 
-  // Keep the tint ref in sync before the scene effect and push updates into the
-  // live ambient light so the alcove color changes without a scene rebuild.
+  // Keep the tint ref in sync before the scene effect and reapply the tint to
+  // the live environment object so the alcove color changes without a rebuild.
   useEffect(() => {
     environmentTintRef.current = environmentTint;
-    if (ambientLightRef.current) {
-      ambientLightRef.current.color.set(environmentTint ?? DEFAULT_AMBIENT_TINT);
-    }
+    applyEnvironmentTint(environmentObjectRef.current, environmentTint || undefined);
   }, [environmentTint]);
 
   useEffect(() => {
@@ -469,8 +466,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       lkgConfigChangeCleanup = () => {
         LookingGlassConfig.removeEventListener("on-config-changed", lkgConfigChangeListener);
       };
-      const ambientLight = new AmbientLight(environmentTintRef.current ?? DEFAULT_AMBIENT_TINT, 1.2);
-      ambientLightRef.current = ambientLight;
+      const ambientLight = new AmbientLight("#fff6e5", 1.2);
       const keyLight = new DirectionalLight("#ffffff", 2.4);
       keyLight.position.set(0.5, 0.5, 2);
       configureLightShadow(keyLight);
@@ -630,7 +626,9 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
             position: environmentReference.environmentPosition,
           }).then((envScene) => {
             environmentObject = envScene;
+            environmentObjectRef.current = envScene;
             environmentObject.visible = !isHldFallbackActive;
+            applyEnvironmentTint(environmentObject, environmentTintRef.current);
           });
 
           void loadVrmAnimationClip(DEFAULT_IDLE_ANIMATION_URL, loadedVrm, loader).then((clip) => {
@@ -1090,7 +1088,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       shadowCanvas?.remove();
       vrButton?.remove();
       vrmRef.current = undefined;
-      ambientLightRef.current = null;
+      environmentObjectRef.current = undefined;
     };
   }, [modelUrl, hideVrButton]);
 

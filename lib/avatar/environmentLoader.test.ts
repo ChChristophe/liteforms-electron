@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { Group, Mesh, Scene, Vector3 } from "three";
+import { Group, Mesh, MeshStandardMaterial, Scene, Texture, Vector3 } from "three";
 
-import { loadEnvironmentGlb } from "./environmentLoader";
+import { applyEnvironmentTint, loadEnvironmentGlb } from "./environmentLoader";
 
 function makeLoader(scene: Group) {
   return { loadAsync: vi.fn().mockResolvedValue({ scene }) };
@@ -114,5 +114,59 @@ describe("loadEnvironmentGlb", () => {
 
     expect(group.castShadow).toBe(false);
     expect(group.receiveShadow).toBe(false);
+  });
+
+  it("tints every mesh material when a tint color is provided", async () => {
+    const envScene = new Group();
+    const meshA = new Mesh();
+    const meshB = new Mesh();
+    envScene.add(meshA, meshB);
+    const loader = makeLoader(envScene);
+    const parentScene = new Scene();
+    const reference = new Group();
+
+    await loadEnvironmentGlb("/models/Alcove.glb", loader as any, parentScene, reference, "#ff0000");
+
+    const materialA = meshA.material as MeshStandardMaterial;
+    expect(materialA.color.getHexString()).toBe("ff0000");
+    expect(materialA.map).toBeNull();
+  });
+
+  it("leaves materials untouched when no tint is provided", async () => {
+    const envScene = new Group();
+    const material = new MeshStandardMaterial({ color: 0x224466 });
+    const mesh = new Mesh(undefined, material);
+    envScene.add(mesh);
+    const loader = makeLoader(envScene);
+    const parentScene = new Scene();
+    const reference = new Group();
+
+    await loadEnvironmentGlb("/models/Alcove.glb", loader as any, parentScene, reference);
+
+    expect(material.color.getHexString()).toBe("224466");
+  });
+
+  it("restores original colors and maps when the tint is cleared", async () => {
+    const envScene = new Group();
+    const map = new Texture();
+    const material = new MeshStandardMaterial({ color: 0x224466, map });
+    const mesh = new Mesh(undefined, material);
+    envScene.add(mesh);
+
+    applyEnvironmentTint(envScene, "#ff0000");
+    expect(material.color.getHexString()).toBe("ff0000");
+    expect(material.map).toBeNull();
+
+    applyEnvironmentTint(envScene, undefined);
+    expect(material.color.getHexString()).toBe("224466");
+    expect(material.map).toBe(map);
+  });
+
+  it("ignores nodes without meshes when applying a tint", () => {
+    const envScene = new Group();
+
+    expect(() => applyEnvironmentTint(envScene, "#ff0000")).not.toThrow();
+    expect(() => applyEnvironmentTint(null, "#ff0000")).not.toThrow();
+    expect(() => applyEnvironmentTint(envScene, undefined)).not.toThrow();
   });
 });

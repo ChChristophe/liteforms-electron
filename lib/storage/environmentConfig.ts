@@ -2,8 +2,10 @@ export const ENVIRONMENT_CONFIG_KEY = "liteforms.environmentConfig";
 
 export type EnvironmentConfigStore = {
   version: 1;
-  alcoveColor: string;
+  alcoveColor: string | null;
 };
+
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/;
 
 export function saveEnvironmentConfig(config: Omit<EnvironmentConfigStore, "version">): void {
   try {
@@ -24,8 +26,20 @@ export function loadEnvironmentConfig(): EnvironmentConfigStore | null {
   }
 }
 
+export function clearEnvironmentConfig(): void {
+  try {
+    localStorage.removeItem(ENVIRONMENT_CONFIG_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 function isEnvironmentConfigStore(value: unknown): value is EnvironmentConfigStore {
-  return typeof value === "object" && value !== null &&
-    (value as Record<string, unknown>).version === 1 &&
-    typeof (value as Record<string, unknown>).alcoveColor === "string";
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    v.version === 1 &&
+    (v.alcoveColor === null ||
+      (typeof v.alcoveColor === "string" && HEX_COLOR_PATTERN.test(v.alcoveColor)))
+  );
 }

@@ -84,7 +84,7 @@ function readInitialModelUrl(): string | undefined {
 export default function HologramPage() {
   const [modelUrl, setModelUrl] = useState<string | undefined>(readInitialModelUrl);
   const [alcoveColor, setAlcoveColor] = useState<string | undefined>(() =>
-    typeof window === "undefined" ? undefined : loadEnvironmentConfig()?.alcoveColor
+    typeof window === "undefined" ? undefined : loadEnvironmentConfig()?.alcoveColor ?? undefined
   );
   const utterChain = useRef<Promise<void>>(Promise.resolve());
   const liveChainRef = useRef<Promise<void>>(Promise.resolve());
@@ -95,7 +95,7 @@ export default function HologramPage() {
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== null && event.key !== ENVIRONMENT_CONFIG_KEY) return;
-      setAlcoveColor(loadEnvironmentConfig()?.alcoveColor);
+      setAlcoveColor(loadEnvironmentConfig()?.alcoveColor ?? undefined);
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
