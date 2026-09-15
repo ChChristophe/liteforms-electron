@@ -6,6 +6,8 @@ import { registerNativeBridgeIpc } from "./nativeBridge";
 import { redactDiagnosticLine } from "./diagnosticRedact";
 import { createNextServerEnv, isHttpServerUp, LITEFORMS_SERVER_PORT, resolveServerHost, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
 import { bootstrapProvisioning, type ProvisioningBootstrap } from "./wifi/provisioningBootstrap";
+import { watchCredentialsRemoval, type CredentialsRemovalWatcher } from "./wifi/resetRelaunchWatcher";
+import { WIFI_CREDENTIALS_FILE_NAME, resolveWifiCredentialsPath } from "./wifi/wifiCredentialsStore";
 import { hologramWindowBrowserOptions, isExternalUrl, isHologramWindowOpenRequest, resolveWindowOpenRequest } from "./windowOpenPolicy";
 
 const diagnosticLogChannel = "liteforms:diagnostic:log";
@@ -15,6 +17,7 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let nextServerProcess: ChildProcess | null = null;
 let provisioning: ProvisioningBootstrap | null = null;
+let credentialsRemovalWatcher: CredentialsRemovalWatcher | null = null;
 let appUrl: string | null = null;
 let lastWindowBounds: Electron.Rectangle | null = null;
 let windowHiddenForBackground = false;
@@ -49,6 +52,42 @@ function deviceConfigDirPath(): string {
     return join(app.getPath("userData"), "config");
   } catch {
     return "config";
+  }
+}
+
+// WiFi credentials live one level up (<userData> root, see
+// provisioningBootstrap) — same path the provisioning/normal boot reads.
+// Handed to the Next server via LITEFORMS_WIFI_CREDENTIALS_PATH in NORMAL
+// mode ONLY (during provisioning the reset route must not purge anything).
+function wifiCredentialsFilePath(): string {
+  try {
+    return resolveWifiCredentialsPath(app.getPath("userData"));
+  } catch {
+    return WIFI_CREDENTIALS_FILE_NAME;
+  }
+}
+
+// POST /api/provisioning/reset follow-up (protocol §15/09/2026): when the
+// credentials file disappears in normal mode, relaunch — next boot has no
+// credentials → provisioning mode (hotspot). Same relaunch pattern as the
+// accepted transition in provisioningBootstrap.
+function armProvisioningResetRelaunch() {
+  let dir: string;
+  try {
+    dir = app.getPath("userData");
+  } catch {
+    return;
+  }
+  credentialsRemovalWatcher = watchCredentialsRemoval(dir, WIFI_CREDENTIALS_FILE_NAME, () => {
+    writeDiagnostic("wifi :: credentials purged via /api/provisioning/reset — relaunching into provisioning mode");
+    app.relaunch();
+    app.exit(0);
+  }, { log: writeDiagnostic });
+  if (!credentialsRemovalWatcher) {
+    // ponytail: fs.watch may be unavailable on odd setups — the reset still
+    // purges the file, but the provisioning relaunch waits for a manual
+    // restart. Upgrade path: polling fallback if real units ever hit this.
+    writeDiagnostic("wifi :: credentials-removal watch not armed (normal mode reset applies at next manual restart)");
   }
 }
 
@@ -159,7 +198,13 @@ async function startPackagedNextServer() {
       // Contract v1 networkMode for /api/health: "provisioning" during the
       // first-boot provisioning flow, wifi/ethernet otherwise (decided by the
       // provisioning state machine before the Next server spawns).
-      LITEFORMS_NETWORK_MODE: process.env.LITEFORMS_NETWORK_MODE ?? "wifi"
+      LITEFORMS_NETWORK_MODE: process.env.LITEFORMS_NETWORK_MODE ?? "wifi",
+      // POST /api/provisioning/reset (protocol §15/09/2026): the route purges
+      // this exact file. Normal mode only — during provisioning we transmit
+      // nothing (the provisioning server is unreachable anyway, and a purge
+      // there would be meaningless: there are no credentials).
+      LITEFORMS_WIFI_CREDENTIALS_PATH:
+        (process.env.LITEFORMS_NETWORK_MODE ?? "wifi") === "provisioning" ? "" : wifiCredentialsFilePath()
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -645,6 +690,12 @@ app.whenReady().then(async () => {
     process.env.LITEFORMS_NETWORK_MODE = "wifi";
   }
 
+  // Reset-watcher: normal mode only (provisioning mode has no credentials to
+  // purge, and the provisioning server never exposes the reset route).
+  if ((process.env.LITEFORMS_NETWORK_MODE ?? "wifi") !== "provisioning") {
+    armProvisioningResetRelaunch();
+  }
+
   appUrl = await resolveAppUrl();
   createWindow(appUrl);
   ensureTray();
@@ -661,6 +712,11 @@ app.whenReady().then(async () => {
 });
 
 app.on("before-quit", () => {
+  // Disarm the reset watcher first: a natural quit must not be hijacked by a
+  // post-dispose unlink event. A relaunch already requested by the watcher
+  // passes through here too (the relaunch was already registered).
+  credentialsRemovalWatcher?.stop();
+  credentialsRemovalWatcher = null;
   if (powerSaveBlockerId !== null) {
     powerSaveBlocker.stop(powerSaveBlockerId);
     powerSaveBlockerId = null;
