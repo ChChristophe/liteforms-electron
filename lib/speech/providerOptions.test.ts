@@ -117,6 +117,15 @@ describe("STT_PROVIDER_OPTIONS", () => {
     const opt = STT_PROVIDER_OPTIONS.find((p) => p.id === "openai")!;
     expect(opt.defaultModel).toBe("gpt-4o-transcribe");
     expect(opt.models?.map((m) => m.id)).toContain("gpt-4o-transcribe");
+    expect(opt.models?.map((m) => m.id)).toEqual(
+      expect.arrayContaining([
+        "gpt-transcribe",
+        "gpt-4o-transcribe",
+        "gpt-4o-mini-transcribe",
+        "gpt-4o-transcribe-diarize",
+        "whisper-1"
+      ])
+    );
   });
 
   it("Mistral STT has correct default model", () => {

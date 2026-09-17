@@ -1,3 +1,5 @@
+import { TOOL_DEFINITIONS, TOOL_INSTRUCTIONS, type ToolDefinition } from "@/lib/llm/toolCatalogue";
+
 export type OpenAiRealtimeVoiceConfig = {
   provider: "openai-realtime";
   credential?: string;
@@ -8,11 +10,20 @@ export type OpenAiRealtimeVoiceConfig = {
   websocketUrl?: string;
 };
 
+/** Flat OpenAI Realtime tool shape, mapped from the shared tool catalogue. */
+export type OpenAiRealtimeTool = {
+  type: "function";
+  name: string;
+  description: string;
+  parameters: ToolDefinition["parameters"];
+};
+
 export type OpenAiRealtimeServerEvent =
   | { type: "user_transcript"; text: string; final: boolean }
   | { type: "assistant_transcript"; text: string; final: boolean }
   | { type: "audio"; audio: string; mimeType: string }
   | { type: "speech_start" }
+  | { type: "function_call"; id: string; name: string; arguments: string }
   | { type: "error"; error: string }
   | { type: "closed" };
 
@@ -21,6 +32,8 @@ export type OpenAiRealtimeBrowserSession = {
   stop(): void;
   isActive(): boolean;
   sendText(text: string): void;
+  sendFunctionCallOutput(callId: string, output: string): void;
+  createResponse(): void;
 };
 
 export type CreateOpenAiRealtimeBrowserSessionInput = {
@@ -28,7 +41,9 @@ export type CreateOpenAiRealtimeBrowserSessionInput = {
   onUserTranscript?: (text: string, final: boolean) => void;
   onAssistantTranscript?: (text: string, final: boolean) => void;
   onAudio?: (audio: Blob) => void;
+  onFunctionCall?: (id: string, name: string, args: string) => void;
   onError?: (error: Error) => void;
+  onEnd?: () => void;
   WebSocketCtor?: typeof WebSocket;
 };
 
@@ -80,7 +95,20 @@ export function validateOpenAiRealtimeWebSocketUrl(input: string) {
   return url;
 }
 
-export function buildOpenAiRealtimeSessionUpdateMessage(config: OpenAiRealtimeVoiceConfig) {
+/** Maps the shared catalogue to OpenAI Realtime's flat `tools` array. */
+export function mapToolDefinitionsToOpenAi(definitions: ToolDefinition[]): OpenAiRealtimeTool[] {
+  return definitions.map((definition) => ({
+    type: "function" as const,
+    name: definition.name,
+    description: definition.description,
+    parameters: definition.parameters
+  }));
+}
+
+export function buildOpenAiRealtimeSessionUpdateMessage(
+  config: OpenAiRealtimeVoiceConfig,
+  tools?: OpenAiRealtimeTool[]
+) {
   const normalized = normalizeOpenAiRealtimeVoiceConfig(config);
   const language = normalized.language.split("-")[0] || normalized.language;
   return {
@@ -89,7 +117,10 @@ export function buildOpenAiRealtimeSessionUpdateMessage(config: OpenAiRealtimeVo
       type: "realtime",
       model: normalized.model,
       output_modalities: ["audio"],
-      instructions: normalized.instructions,
+      // Tools and their instructions are only advertised when a handler will
+      // execute the calls: without one the app keeps its previous behaviour.
+      instructions: tools ? `${TOOL_INSTRUCTIONS}\n\n${normalized.instructions}` : normalized.instructions,
+      ...(tools ? { tools, tool_choice: "auto" } : {}),
       audio: {
         input: {
             format: { type: "audio/pcm", rate: 24000 },
@@ -127,7 +158,34 @@ export function mapOpenAiRealtimeEvent(event: unknown): OpenAiRealtimeServerEven
   if ((type === "response.output_audio.delta" || type === "response.audio.delta") && typeof record.delta === "string") {
     events.push({ type: "audio", audio: record.delta, mimeType: "audio/pcm;rate=24000" });
   }
-  if (type === "response.done") events.push({ type: "closed" });
+  if (type === "response.function_call_arguments.done") {
+    if (typeof record.call_id === "string" && typeof record.name === "string") {
+      events.push({
+        type: "function_call",
+        id: record.call_id,
+        name: record.name,
+        arguments: typeof record.arguments === "string" ? record.arguments : "{}"
+      });
+    }
+  }
+  if (type === "response.done") {
+    const response = readRecord(record.response);
+    const output = Array.isArray(response?.output) ? response.output : [];
+    let hasFunctionCall = false;
+    for (const item of output) {
+      const entry = readRecord(item);
+      if (entry?.type === "function_call" && typeof entry.call_id === "string" && typeof entry.name === "string") {
+        hasFunctionCall = true;
+        events.push({
+          type: "function_call",
+          id: entry.call_id,
+          name: entry.name,
+          arguments: typeof entry.arguments === "string" ? entry.arguments : "{}"
+        });
+      }
+    }
+    if (!hasFunctionCall) events.push({ type: "closed" });
+  }
   if (type === "error") events.push({ type: "error", error: readError(record.error) });
   return events;
 }
@@ -137,7 +195,9 @@ export function createOpenAiRealtimeBrowserSession({
   onUserTranscript,
   onAssistantTranscript,
   onAudio,
+  onFunctionCall,
   onError,
+  onEnd,
   WebSocketCtor = WebSocket
 }: CreateOpenAiRealtimeBrowserSessionInput): OpenAiRealtimeBrowserSession {
   const normalized = normalizeOpenAiRealtimeVoiceConfig(config);
@@ -148,6 +208,9 @@ export function createOpenAiRealtimeBrowserSession({
   let active = false;
   let assistantTranscript = "";
   let pendingMessages: unknown[] = [];
+  let pendingFunctionCalls = 0;
+  const emittedFunctionCallIds = new Set<string>();
+  const tools = onFunctionCall ? mapToolDefinitionsToOpenAi(TOOL_DEFINITIONS) : undefined;
 
   const emitError = (caught: unknown) => {
     onError?.(caught instanceof Error ? caught : new Error("OpenAI Realtime session failed."));
@@ -163,6 +226,8 @@ export function createOpenAiRealtimeBrowserSession({
     active = false;
     assistantTranscript = "";
     pendingMessages = [];
+    pendingFunctionCalls = 0;
+    emittedFunctionCallIds.clear();
   };
 
   const sendJson = (message: unknown) => {
@@ -189,7 +254,18 @@ export function createOpenAiRealtimeBrowserSession({
       if (mapped.final) assistantTranscript = "";
     }
     if (mapped.type === "audio") onAudio?.(base64PcmToWavBlob(mapped.audio, parseAudioSampleRate(mapped.mimeType)));
+    if (mapped.type === "function_call") {
+      // The provider can repeat the same call via both the arguments event and
+      // the response output; dedupe by call id so the handler runs once.
+      if (!emittedFunctionCallIds.has(mapped.id)) {
+        emittedFunctionCallIds.add(mapped.id);
+        pendingFunctionCalls += 1;
+        onFunctionCall?.(mapped.id, mapped.name, mapped.arguments);
+      }
+    }
     if (mapped.type === "error") emitError(new Error(mapped.error));
+    // A tool call is still being executed: don't end the session yet.
+    if (mapped.type === "closed" && pendingFunctionCalls === 0) onEnd?.();
   };
 
   return {
@@ -201,7 +277,7 @@ export function createOpenAiRealtimeBrowserSession({
           buildOpenAiRealtimeWebSocketProtocols(normalized)
         );
         socket.addEventListener("open", () => {
-          sendJson(buildOpenAiRealtimeSessionUpdateMessage(normalized));
+          sendJson(buildOpenAiRealtimeSessionUpdateMessage(normalized, tools));
           flushPendingMessages();
         });
         socket.addEventListener("message", (event) => {
@@ -260,6 +336,20 @@ export function createOpenAiRealtimeBrowserSession({
           content: [{ type: "input_text", text: trimmed }]
         }
       });
+      sendJson({ type: "response.create" });
+    },
+    sendFunctionCallOutput(callId, output) {
+      pendingFunctionCalls = Math.max(0, pendingFunctionCalls - 1);
+      sendJson({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output
+        }
+      });
+    },
+    createResponse() {
       sendJson({ type: "response.create" });
     }
   };

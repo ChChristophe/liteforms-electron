@@ -5,6 +5,8 @@ import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/re
 import { ChatPanel, _clearPreloadSessionsForTesting } from "./ChatPanel";
 import type { CharacterConfig } from "./ChatPanel";
 import { createLlmAdapter } from "@/lib/llm";
+import { TimerManager } from "@/lib/timer";
+import type { TimerExpiredDetail } from "@/lib/timer";
 import {
   createAsrAdapter,
   createAsrRealtimeSession,
@@ -13,6 +15,23 @@ import {
 } from "@/lib/speech";
 
 afterEach(cleanup);
+
+// ── Tool registry / chime module mocks ──────────────────────────────────────
+// Mocked at module scope so the function-call and expiry paths can be driven
+// without real tool execution or audio.
+
+const { executeToolMock, playTimerChimeMock } = vi.hoisted(() => ({
+  executeToolMock: vi.fn(),
+  playTimerChimeMock: vi.fn()
+}));
+
+vi.mock("@/lib/llm/toolRegistry", () => ({
+  createToolRegistry: vi.fn(() => ({ definitions: [], instructions: "", execute: executeToolMock }))
+}));
+
+vi.mock("@/lib/speech/timerChime", () => ({
+  playTimerChime: playTimerChimeMock
+}));
 
 // ── Heavy dependency mocks ──────────────────────────────────────────────────
 
@@ -74,12 +93,37 @@ const defaultCharacter: CharacterConfig = {
   greeting: "Hi, what should we work through first?"
 };
 
+function createTestTimerManager() {
+  return new TimerManager({ save: vi.fn(), load: () => [], clear: vi.fn() });
+}
+
+function createFakeTimerManager() {
+  const listeners = new Set<(detail: TimerExpiredDetail) => void>();
+  return {
+    onExpired: vi.fn((listener: (detail: TimerExpiredDetail) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    }),
+    emitExpired(detail: TimerExpiredDetail) {
+      for (const listener of [...listeners]) listener(detail);
+    },
+    listenerCount: () => listeners.size
+  };
+}
+
 function renderPanel(overrides: Partial<CharacterConfig> = {}) {
   const onCharacterChange = vi.fn();
   const onModelUrlChange = vi.fn();
   const character = { ...defaultCharacter, ...overrides };
   render(
-    <ChatPanel character={character} onCharacterChange={onCharacterChange} onModelUrlChange={onModelUrlChange} />
+    <ChatPanel
+      character={character}
+      onCharacterChange={onCharacterChange}
+      onModelUrlChange={onModelUrlChange}
+      timerManager={createTestTimerManager()}
+    />
   );
   return { onCharacterChange, onModelUrlChange };
 }
@@ -92,6 +136,7 @@ function renderPanelWithConfig(options: Partial<React.ComponentProps<typeof Chat
       character={defaultCharacter}
       onCharacterChange={onCharacterChange}
       onModelUrlChange={onModelUrlChange}
+      timerManager={createTestTimerManager()}
       {...options}
     />
   );
@@ -239,6 +284,7 @@ describe("ChatPanel VRM loader", () => {
         onCharacterChange={vi.fn()}
         onModelUrlChange={onModelUrlChange}
         onVrmReset={onVrmReset}
+        timerManager={createTestTimerManager()}
       />
     );
 
@@ -410,7 +456,9 @@ describe("ChatPanel chat interface", () => {
       start: vi.fn(),
       stop: vi.fn(),
       isActive: vi.fn().mockReturnValue(true),
-      sendText
+      sendText,
+      sendFunctionCallOutput: vi.fn(),
+      createResponse: vi.fn()
     };
     vi.mocked(createGoogleLiveBrowserSession).mockReturnValueOnce(session);
     vi.mocked(createLlmAdapter).mockClear();
@@ -1147,6 +1195,7 @@ describe("ChatPanel local model preloading", () => {
         onCharacterChange={vi.fn()}
         onModelUrlChange={vi.fn()}
         shouldPreloadLocalModels={true}
+        timerManager={createTestTimerManager()}
       />
     );
     await waitFor(() => {
@@ -1185,6 +1234,7 @@ describe("ChatPanel local model preloading", () => {
         onCharacterChange={vi.fn()}
         onModelUrlChange={vi.fn()}
         shouldPreloadLocalModels={true}
+        timerManager={createTestTimerManager()}
       />
     );
 
@@ -1217,6 +1267,7 @@ describe("ChatPanel local model preloading", () => {
         onCharacterChange={vi.fn()}
         onModelUrlChange={vi.fn()}
         shouldPreloadLocalModels={true}
+        timerManager={createTestTimerManager()}
       />
     );
 
@@ -1298,6 +1349,159 @@ describe("ChatPanel advanced panel shows only selected local models", () => {
     });
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(screen.queryByText("Gemma 4 E2B q8")).not.toBeInTheDocument();
+  });
+});
+
+// ── Realtime function calling ────────────────────────────────────────────────
+
+const googleLiveConfig = {
+  provider: "google-live" as const,
+  credential: "google-key",
+  model: "gemini-live",
+  voice: "Kore"
+};
+
+function stubRealtimeAudioEnvironment() {
+  vi.stubGlobal("requestAnimationFrame", vi.fn());
+  vi.stubGlobal("AudioContext", class {
+    state = "running";
+    currentTime = 0;
+    destination = {};
+    createAnalyser() {
+      return {
+        fftSize: 0,
+        frequencyBinCount: 8,
+        connect: vi.fn(),
+        getByteTimeDomainData: vi.fn()
+      };
+    }
+    createBufferSource() {
+      return { connect: vi.fn(), start: vi.fn(), buffer: null };
+    }
+    decodeAudioData = vi.fn().mockResolvedValue({ duration: 0.1 });
+    close = vi.fn();
+  });
+}
+
+function createMockRealtimeSession() {
+  return {
+    start: vi.fn(),
+    stop: vi.fn(),
+    isActive: vi.fn().mockReturnValue(true),
+    sendText: vi.fn(),
+    sendFunctionCallOutput: vi.fn(),
+    createResponse: vi.fn()
+  };
+}
+
+describe("ChatPanel realtime function calling", () => {
+  let capturedInput: Parameters<typeof createGoogleLiveBrowserSession>[0] | null;
+
+  beforeEach(() => {
+    vi.mocked(createGoogleLiveBrowserSession).mockReset();
+    executeToolMock.mockReset();
+    capturedInput = null;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function startSession(session: ReturnType<typeof createMockRealtimeSession>) {
+    vi.mocked(createGoogleLiveBrowserSession).mockImplementationOnce((input) => {
+      capturedInput = input;
+      return session;
+    });
+    stubRealtimeAudioEnvironment();
+    renderPanelWithConfig({ initialRealtimeVoiceConfig: googleLiveConfig });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(capturedInput?.onFunctionCall).toBeDefined());
+    return capturedInput!;
+  }
+
+  it("executes the tool and sends its output back through the session", async () => {
+    const session = createMockRealtimeSession();
+    executeToolMock.mockResolvedValue('{"success":true}');
+    const input = await startSession(session);
+
+    await input.onFunctionCall?.("call-1", "start_timer", '{"duration_minutes":5}');
+
+    expect(executeToolMock).toHaveBeenCalledWith("start_timer", '{"duration_minutes":5}');
+    expect(session.sendFunctionCallOutput).toHaveBeenCalledWith("call-1", '{"success":true}');
+    expect(session.createResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends a generic error and still creates a response when execution fails", async () => {
+    const session = createMockRealtimeSession();
+    executeToolMock.mockRejectedValue(new Error("boom"));
+    const input = await startSession(session);
+
+    await input.onFunctionCall?.("call-2", "calculate", '{"expression":"1/0"}');
+
+    expect(session.sendFunctionCallOutput).toHaveBeenCalledWith("call-2", "Error executing function");
+    expect(session.createResponse).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Timer expiry ─────────────────────────────────────────────────────────────
+
+describe("ChatPanel timer expiry", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    playTimerChimeMock.mockClear();
+  });
+
+  it("unsubscribes from timer expiration on unmount", () => {
+    const timerManager = createFakeTimerManager();
+    const { unmount } = render(
+      <ChatPanel
+        character={defaultCharacter}
+        onCharacterChange={vi.fn()}
+        onModelUrlChange={vi.fn()}
+        timerManager={timerManager as unknown as TimerManager}
+      />
+    );
+
+    expect(timerManager.listenerCount()).toBe(1);
+    unmount();
+    expect(timerManager.listenerCount()).toBe(0);
+  });
+
+  it("plays the chime, adds an assistant message, and announces through the active session", async () => {
+    const session = createMockRealtimeSession();
+    vi.mocked(createGoogleLiveBrowserSession).mockImplementationOnce(() => session);
+    stubRealtimeAudioEnvironment();
+    const timerManager = createFakeTimerManager();
+
+    renderPanelWithConfig({
+      timerManager: timerManager as unknown as TimerManager,
+      initialRealtimeVoiceConfig: googleLiveConfig
+    });
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(session.start).toHaveBeenCalled());
+    session.sendText.mockClear();
+    playTimerChimeMock.mockClear();
+
+    timerManager.emitExpired({
+      timer_id: "t1",
+      label: "pates",
+      duration_minutes: 5,
+      created_at: "2026-01-01T00:00:00.000Z",
+      expires_at: "2026-01-01T00:05:00.000Z"
+    });
+
+    await waitFor(() => {
+      expect(playTimerChimeMock).toHaveBeenCalledTimes(1);
+      expect(session.sendText).toHaveBeenCalledWith(
+        '[System: timer expiré] Le timer "pates" de 5 minutes est terminé. Annonce-le à l\'utilisateur de manière naturelle et concise. N\'appelle aucun outil, le timer est déjà terminé.'
+      );
+    });
+    expect(screen.getByText('⏰ Le timer "pates" de 5 minutes est terminé.')).toBeInTheDocument();
   });
 });
 

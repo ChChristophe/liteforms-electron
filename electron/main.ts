@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerNativeBridgeIpc } from "./nativeBridge";
+import { registerCredentialIpc, PROVIDER_CREDENTIALS_FILE_NAME } from "./credentials";
 import { redactDiagnosticLine } from "./diagnosticRedact";
 import { createNextServerEnv, isHttpServerUp, LITEFORMS_SERVER_PORT, resolveServerHost, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
 import { bootstrapProvisioning, type ProvisioningBootstrap } from "./wifi/provisioningBootstrap";
@@ -204,7 +205,11 @@ async function startPackagedNextServer() {
       // nothing (the provisioning server is unreachable anyway, and a purge
       // there would be meaningless: there are no credentials).
       LITEFORMS_WIFI_CREDENTIALS_PATH:
-        (process.env.LITEFORMS_NETWORK_MODE ?? "wifi") === "provisioning" ? "" : wifiCredentialsFilePath()
+        (process.env.LITEFORMS_NETWORK_MODE ?? "wifi") === "provisioning" ? "" : wifiCredentialsFilePath(),
+      // POST /api/credentials (protocol 17/09/2026): the route writes provider
+      // API keys to this exact file (single source of truth shared with the
+      // renderer via the credential IPC in registerCredentialIpc).
+      LITEFORMS_CREDENTIALS_PATH: join(deviceConfigDirPath(), PROVIDER_CREDENTIALS_FILE_NAME)
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -639,6 +644,12 @@ app.whenReady().then(async () => {
   } catch (err) {
     writeDiagnostic(`[device-config] dir creation failed ${String(err)}`);
   }
+
+  // Provider-credential IPC (decision D1): the renderer reads/writes provider
+  // API keys in the same <userData>/config/ folder the Next server writes
+  // (LITEFORMS_CREDENTIALS_PATH). Registered before the window loads so the
+  // preload's credential calls always find a handler.
+  registerCredentialIpc(ipcMain, deviceConfigDirPath(), writeDiagnostic);
 
   if (process.platform === "win32") {
     app.setAppUserModelId("org.liteforms.web");

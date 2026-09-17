@@ -15,6 +15,7 @@ import {
 import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import type { BaseProviderConfig } from "@/lib/llm";
 import type { AsrConfig, RealtimeVoiceConfig, TtsConfig } from "@/lib/speech";
+import { TimerManager } from "@/lib/timer";
 import { saveSessionConfig, loadSessionConfig } from "@/lib/storage/sessionConfig";
 import { saveCharacterConfig, loadCharacterConfig } from "@/lib/storage/characterConfig";
 import { loadMoodConfig } from "@/lib/storage/moodConfig";
@@ -51,6 +52,10 @@ export default function HomePage() {
   const [initialAsrConfig, setInitialAsrConfig] = useState<AsrConfig | undefined>(undefined);
   const [initialRealtimeVoiceConfig, setInitialRealtimeVoiceConfig] = useState<RealtimeVoiceConfig | undefined>(undefined);
   const [chatPanelKey, setChatPanelKey] = useState(0);
+  // Single timer manager owned by the page: ChatPanel remounts (chatPanelKey)
+  // when providers change, and recreating the manager there would drop the
+  // in-flight setTimeout callbacks (persistence survives, the schedules do not).
+  const [timerManager] = useState(() => new TimerManager());
   const [modalLoadState, setModalLoadState] = useState<LocalModelLoadState[]>(initialLocalModelLoadState);
   const [bridgeConnected, setBridgeConnected] = useState<boolean | undefined>(undefined);
   const [bridgeDisplay, setBridgeDisplay] = useState<LookingGlassDisplayBounds | undefined>(undefined);
@@ -156,6 +161,12 @@ export default function HomePage() {
       stopPocDeviceConfigPolling?.();
     };
   }, []);
+
+  // Load persisted timers once at startup and release the schedules on unmount.
+  useEffect(() => {
+    timerManager.load();
+    return () => timerManager.dispose();
+  }, [timerManager]);
 
   useEffect(() => {
     let disposed = false;
@@ -341,6 +352,7 @@ export default function HomePage() {
         onOpenConfigure={handleConfigureOpen}
         handleTtsForHologram={handleTtsResult}
         handleRealtimeAudioForHologram={forwardRealtimeAudio}
+        timerManager={timerManager}
       />
       {showOnboarding && (
         <OnboardingModal

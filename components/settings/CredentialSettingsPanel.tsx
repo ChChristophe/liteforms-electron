@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { createIndexedDbCredentialRepository } from "@/lib/storage/indexedDbCredentialRepository";
 import { CREDENTIAL_PROVIDER_IDS, getVisibleLlmProviderOptions } from "@/lib/llm/providerOptions";
 import { getVisibleTtsProviderOptions, getVisibleSttProviderOptions } from "@/lib/speech/providerOptions";
+import { getCredentialBridge } from "@/lib/credential/credentialBridge";
 import type { BrowserCredential } from "@/lib/storage/types";
 
 /** LLM + speech providers that require an API credential, de-duplicated and sorted. */
@@ -46,15 +47,27 @@ export function CredentialSettingsPanel() {
   }
 
   async function onSubmit(formData: FormData) {
-    const repo = await createIndexedDbCredentialRepository();
+    const providerId = String(formData.get("providerId") ?? "");
+    const apiKey = String(formData.get("credential") ?? "");
+    const bridge = getCredentialBridge();
 
+    if (bridge) {
+      // Appliance: write to the durable store (<userData>/config), the same
+      // single source of truth POST /api/credentials writes to. The key stays
+      // on the appliance; only the IPC call carries it (never HTTP).
+      await bridge.set(providerId, apiKey);
+      setStatus("Saved on this appliance.");
+      return;
+    }
+
+    // Web dev fallback (no Electron): browser-local storage.
+    const repo = await createIndexedDbCredentialRepository();
     await repo.save({
-      providerId: String(formData.get("providerId") ?? ""),
+      providerId,
       label: String(formData.get("label") ?? ""),
       kind: "api_key",
-      encryptedValue: String(formData.get("credential") ?? "")
+      encryptedValue: apiKey
     });
-
     setStatus("Saved in this browser.");
     await refresh();
   }

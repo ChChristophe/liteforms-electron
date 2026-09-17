@@ -1,4 +1,5 @@
 import type { OpenAiRealtimeVoiceConfig } from "./openAiRealtime";
+import { TOOL_DEFINITIONS, TOOL_INSTRUCTIONS, type ToolDefinition, type ToolParameterSchema } from "@/lib/llm/toolCatalogue";
 
 export type GoogleLiveVoiceConfig = {
   provider: "google-live";
@@ -23,6 +24,7 @@ export type GoogleLiveServerEvent =
   | { type: "user_transcript"; text: string; final: boolean }
   | { type: "assistant_transcript"; text: string; final: boolean }
   | { type: "audio"; audio: string; mimeType: string }
+  | { type: "function_call"; id: string; name: string; args: string }
   | { type: "error"; error: string }
   | { type: "closed" };
 
@@ -31,6 +33,8 @@ export type GoogleLiveBrowserSession = {
   stop(): void;
   isActive(): boolean;
   sendText(text: string): void;
+  sendFunctionCallOutput(id: string, output: string): void;
+  createResponse(): void;
 };
 
 export type CreateGoogleLiveBrowserSessionInput = {
@@ -38,7 +42,9 @@ export type CreateGoogleLiveBrowserSessionInput = {
   onUserTranscript?: (text: string, final: boolean) => void;
   onAssistantTranscript?: (text: string, final: boolean) => void;
   onAudio?: (audio: Blob) => void;
+  onFunctionCall?: (id: string, name: string, args: string) => void;
   onError?: (error: Error) => void;
+  onEnd?: () => void;
   WebSocketCtor?: typeof WebSocket;
 };
 
@@ -66,7 +72,7 @@ export function normalizeGoogleLiveVoiceConfig(config: GoogleLiveVoiceConfig) {
   };
 }
 
-export function buildGoogleLiveSetupMessage(config: GoogleLiveVoiceConfig) {
+export function buildGoogleLiveSetupMessage(config: GoogleLiveVoiceConfig, tools?: GoogleLiveTools) {
   const normalized = normalizeGoogleLiveVoiceConfig(config);
   const usesNativeAudio = normalized.model.includes("native-audio");
   return {
@@ -84,8 +90,11 @@ export function buildGoogleLiveSetupMessage(config: GoogleLiveVoiceConfig) {
         }
       },
       systemInstruction: {
-        parts: [{ text: normalized.instructions }]
+        // Tool instructions and declarations are only advertised when a handler
+        // will execute the calls: without one the app keeps its previous behaviour.
+        parts: [{ text: tools ? `${TOOL_INSTRUCTIONS}\n\n${normalized.instructions}` : normalized.instructions }]
       },
+      ...(tools ? { tools } : {}),
       inputAudioTranscription: {},
       outputAudioTranscription: {}
     }
@@ -129,6 +138,42 @@ export function validateGoogleLiveWebSocketUrl(input: string) {
   return url;
 }
 
+export type GoogleLiveFunctionDeclaration = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+};
+
+export type GoogleLiveTools = Array<{ functionDeclarations: GoogleLiveFunctionDeclaration[] }>;
+
+/** Google Live expects `functionDeclarations` with uppercase schema types. */
+export function mapToolDefinitionsToGoogleLive(definitions: ToolDefinition[]): GoogleLiveTools {
+  return [
+    {
+      functionDeclarations: definitions.map((definition) => ({
+        name: definition.name,
+        description: definition.description,
+        parameters: toGoogleLiveSchema(definition.parameters)
+      }))
+    }
+  ];
+}
+
+function toGoogleLiveSchema(schema: ToolParameterSchema): Record<string, unknown> {
+  return {
+    type: schema.type.toUpperCase(),
+    ...(schema.description !== undefined ? { description: schema.description } : {}),
+    ...(schema.properties
+      ? {
+          properties: Object.fromEntries(
+            Object.entries(schema.properties).map(([key, value]) => [key, toGoogleLiveSchema(value)])
+          )
+        }
+      : {}),
+    ...(schema.required ? { required: schema.required } : {})
+  };
+}
+
 export function mapGoogleLiveEvent(event: unknown): GoogleLiveServerEvent[] {
   const record = readRecord(event);
   if (!record) return [];
@@ -146,7 +191,20 @@ export function mapGoogleLiveEvent(event: unknown): GoogleLiveServerEvent[] {
 
   const parts = Array.isArray(modelTurn?.parts) ? modelTurn.parts : [];
   for (const part of parts) {
-    const inlineData = readRecord(readRecord(part)?.inlineData ?? readRecord(part)?.inline_data);
+    const inner = readRecord(part);
+    if (!inner) continue;
+
+    const functionCall = readRecord(inner.functionCall ?? inner.function_call);
+    if (functionCall && typeof functionCall.name === "string") {
+      // Google Live carries no call id in the functionCall payload, so the
+      // function name is used as the correlation id (as in the web reference);
+      // sendFunctionCallOutput maps it back to `functionResponse.name`.
+      const args = typeof functionCall.args === "string" ? functionCall.args : JSON.stringify(functionCall.args ?? {});
+      events.push({ type: "function_call", id: functionCall.name, name: functionCall.name, args });
+      continue;
+    }
+
+    const inlineData = readRecord(inner.inlineData ?? inner.inline_data);
     if (!inlineData) continue;
     const data = inlineData.data;
     if (typeof data === "string") {
@@ -157,7 +215,8 @@ export function mapGoogleLiveEvent(event: unknown): GoogleLiveServerEvent[] {
   const error = readRecord(record.error);
   const errorMessage = typeof error?.message === "string" ? error.message : undefined;
   if (errorMessage) events.push({ type: "error", error: errorMessage });
-  if (turnComplete) events.push({ type: "closed" });
+  // A tool call is pending: keep the session open.
+  if (turnComplete && !events.some((event) => event.type === "function_call")) events.push({ type: "closed" });
   return events;
 }
 
@@ -166,7 +225,9 @@ export function createGoogleLiveBrowserSession({
   onUserTranscript,
   onAssistantTranscript,
   onAudio,
+  onFunctionCall,
   onError,
+  onEnd,
   WebSocketCtor = WebSocket
 }: CreateGoogleLiveBrowserSessionInput): GoogleLiveBrowserSession {
   const normalized = normalizeGoogleLiveVoiceConfig(config);
@@ -177,6 +238,7 @@ export function createGoogleLiveBrowserSession({
   let active = false;
   let setupComplete = false;
   let pendingMessages: unknown[] = [];
+  const tools = onFunctionCall ? mapToolDefinitionsToGoogleLive(TOOL_DEFINITIONS) : undefined;
 
   const emitError = (caught: unknown) => {
     onError?.(caught instanceof Error ? caught : new Error("Google Live session failed."));
@@ -216,7 +278,7 @@ export function createGoogleLiveBrowserSession({
       try {
         socket = new WebSocketCtor(buildGoogleLiveWebSocketUrl(normalized));
         socket.addEventListener("open", () => {
-          sendJson(buildGoogleLiveSetupMessage(normalized), { requiresSetup: false });
+          sendJson(buildGoogleLiveSetupMessage(normalized, tools), { requiresSetup: false });
         });
         socket.addEventListener("message", (event) => {
           const handle = (text: string) => {
@@ -231,7 +293,9 @@ export function createGoogleLiveBrowserSession({
                 if (mapped.type === "user_transcript") onUserTranscript?.(mapped.text, mapped.final);
                 if (mapped.type === "assistant_transcript") onAssistantTranscript?.(mapped.text, mapped.final);
                 if (mapped.type === "audio") onAudio?.(base64PcmToWavBlob(mapped.audio, parseAudioSampleRate(mapped.mimeType)));
+                if (mapped.type === "function_call") onFunctionCall?.(mapped.id, mapped.name, mapped.args);
                 if (mapped.type === "error") emitError(new Error(mapped.error));
+                if (mapped.type === "closed") onEnd?.();
               }
             } catch (caught) {
               emitError(caught);
@@ -289,6 +353,35 @@ export function createGoogleLiveBrowserSession({
           turnComplete: true
         }
       });
+    },
+    sendFunctionCallOutput(id, output) {
+      let response: unknown;
+      try {
+        response = JSON.parse(output);
+      } catch {
+        response = { result: output };
+      }
+      sendJson({
+        clientContent: {
+          turns: [
+            {
+              role: "function",
+              parts: [
+                {
+                  functionResponse: {
+                    name: id,
+                    response
+                  }
+                }
+              ]
+            }
+          ],
+          turnComplete: true
+        }
+      });
+    },
+    createResponse() {
+      sendJson({ clientContent: { turnComplete: true } });
     }
   };
 }

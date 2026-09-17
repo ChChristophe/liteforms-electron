@@ -66,6 +66,8 @@ export const GOOGLE_LIVE_VOICE_OPTIONS: ProviderVoiceOption[] = [
 ];
 
 export const OPENAI_REALTIME_MODEL_OPTIONS: ProviderModelOption[] = [
+  { id: "gpt-realtime-2.1", label: "GPT Realtime 2.1" },
+  { id: "gpt-realtime-2.1-mini", label: "GPT Realtime 2.1 mini" },
   { id: "gpt-realtime-2", label: "GPT Realtime 2" },
   { id: "gpt-realtime", label: "GPT Realtime" }
 ];

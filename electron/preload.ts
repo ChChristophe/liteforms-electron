@@ -4,6 +4,8 @@ const nativeBridgeGetStateChannel = "liteforms:nativeBridge:getState";
 const nativeBridgeGetDriverStatusChannel = "liteforms:nativeBridge:getDriverStatus";
 const diagnosticLogChannel = "liteforms:diagnostic:log";
 const preloadLoadedChannel = "liteforms:preload:loaded";
+const credentialGetChannel = "liteforms:credential:get";
+const credentialSetChannel = "liteforms:credential:set";
 
 // Report back to the main process that the preload actually ran in this window,
 // so we can diagnose cases where the preload silently fails to load (sandbox,
@@ -36,6 +38,12 @@ const liteformsElectron = Object.freeze({
   },
   diagnostic: {
     log: (line: string) => ipcRenderer.invoke(diagnosticLogChannel, line)
+  },
+  // Provider credential access (decision D1). Returns the raw key only to the
+  // appliance renderer (in-memory), never over the network.
+  credentials: {
+    get: (provider: string): Promise<string | undefined> => ipcRenderer.invoke(credentialGetChannel, provider),
+    set: (provider: string, apiKey: string): Promise<boolean> => ipcRenderer.invoke(credentialSetChannel, provider, apiKey)
   }
 });
 

@@ -717,7 +717,7 @@ recovery : bouton physique §6.7.
 ## 8. Backlog des prochaines actions concrètes
 
 **Portage (workspace `C:\dev\liteforms-electron`)**
-- [ ] Portendre 22 (strip markdown) + 25/26/28/29 (parser + timers + function calling), groupe « logique pure ».
+- [x] ~~Portendre 22 (strip markdown) + 25/26/28/29 (parser + timers + function calling), groupe « logique pure ».~~ **FAIT (17/09, non validé terrain)** : strip markdown (dédup `getSafeTextForTts`), parser `calculate` (`%` de la base), `lib/timer/` + `timerStore`, catalogue d'outils + registre, câblage adaptateurs + `ChatPanel`, chime. Détail : §13.
 - [ ] Port `6`/`7` (retunes Alacove/hips) dans la scène Electron + `/hologram`.
 - [ ] Port `19`/`20` (conversation ids OpenClaw) puis `2`.
 - [ ] Port `9` (emotion : `moodConfig` + controller + UI).
@@ -733,7 +733,7 @@ recovery : bouton physique §6.7.
 - [x] `GET /api/provisioning/health`. **FAIT (13/09/2026)** — serveur dédié main process, actif uniquement en mode provisioning.
 - [x] `POST /api/provisioning/wifi` + stockage WiFi sécurisé (`safeStorage`) + transition vers le WiFi cible (Linux `nmcli` / Windows profil WLAN) + fermeture du mode provisioning. **FAIT (13/09/2026)** — persistance AVANT arrêt hotspot ; relance auto après acceptation ; join Windows à retester avec réseau réel (netsh wlan connect exige l'autorisation de localisation Win11).
 - [x] `GET /api/health` (réseau normal, `networkMode`, `configVersions`). **FAIT (13/09/2026)** — `networkMode` via `LITEFORMS_NETWORK_MODE` décidé par la machine à états.
-- [ ] API `POST /api/device-config` (v1 sans token, idempotent, champs inconnus ignorés) + `GET /api/provider-status` (statuts masqués).
+- [x] ~~API `POST /api/device-config` (v1 sans token, idempotent, champs inconnus ignorés) + `GET /api/provider-status` (statuts masqués).~~ **FAIT (17/09, non validé terrain)** : `device-config` durable déjà en place ; `POST /api/credentials` + `GET /api/provider-status` ajoutés (clé via fichier + IPC, jamais servie). Détail : §13.
 - [ ] `indexedDbVrmRepository` : `list()`/`loadByName()` (le payload n'a que `fileName`/`id`, `hash` nullable).
 - [ ] `applyDeviceConfig()` (réutilise setters + remontage ChatPanel) + événement live (polling d'abord).
 - [x] Port commit 9 (mood) et ports 6/7 (pose) nécessaires au champ `avatar.*` (mapping §4.4). **FAIT** : mood `e402db0` (validé terrain), pose implémentée 17/09 (`avatarPose.ts` + `poseConfig.ts` + `AvatarScene`, validation terrain à faire).
@@ -830,3 +830,36 @@ mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4
 * **Incident 2 — `alcoveYaw` appliqué en absolu** : `alcove.rotation.y = pose.alcoveYaw` écrasait l'orientation naturelle de l'alcôve (`environmentLoader` ne copie que `scale`/`position`), donc « Réinitialiser » n'aurait pas restauré le rendu de référence — précisément le risque signalé par le produit. Fix : capture de `baseAlcoveYaw` au chargement, application en relatif, test avec bases non nulles.
 * **Leçons** : (1) **sur Looking Glass, exprimer tout réglage visuel en paramètre de scène (`targetDiam`, transforms), jamais en mouvement de caméra** — sinon effet nul et invisible en test unitaire ; (2) tout champ de pose doit être **relatif à une base capturée**, sinon le reset perd la référence (l'appliance et le Mobile ne rendent pas pareil, donc aucune valeur ne doit être « en dur » d'un côté) ; (3) `typeof value === "number"` laisse passer `NaN`/`Infinity` — `Number.isFinite` obligatoire à la frontière de confiance ; (4) le bouton « Réinitialiser » du Mobile doit être verrouillé par un test **sur les littéraux du contrat**, pas sur la constante locale.
 * **Reste** : rien de bloquant pour cette feature. Le trou connu : le test Mobile reproduit l'appel exact de `resetPose` mais ne monte pas le composant (pas de renderer RN installé) — à fermer si un harnais de rendu arrive.
+
+---
+
+## 13. Post-mortem — config providers + clés API + outils voix (17/09/2026, NON validé terrain)
+
+* **Fait (Electron)** : `POST /api/credentials` + `GET /api/provider-status` (routes qui manquaient) ; clés stockées dans `<userData>/config/provider-credentials.json` (même mécanisme que device-config), relues par le renderer via un **IPC preload** (`electron/credentials.ts` + `lib/credential/credentialBridge.ts`) injecté dans `config.credential` aux points d'appel des adaptateurs — **une seule source de vérité** (le `CredentialSettingsPanel` desktop écrit au même endroit). Redaction étendue (champ `credential` masqué dans les diagnostics). Modèles manquants ajoutés (`gpt-realtime-2.1`, `gpt-realtime-2.1-mini`, +4 STT OpenAI).
+* **Fait (Mobile)** : écran providers refait — **rien de pré-activé** (état `"none"`), cascade provider→modèle/voix/clé, `requiresKey` par provider, clé **transitoire** (jamais persistée) envoyée via `postCredential`, `provider-status` affiché. `serializeDeviceConfig` refuse `"none"`, `review` bloque l'envoi tant qu'un slot est vide.
+* **Fait (portage voix, propre)** : catalogue d'outils unique + registre (7 outils, hors `openclaw_web_search`), timers, chime (module dédié, son identique), strip markdown, parser `calculate` avec `%` de la base. Dette web éliminée : définitions d'outils dupliquées par provider, `if/else` de 50 lignes dans `ChatPanel`, singleton `TimerManager`, `CustomEvent` DOM, `localStorage` dans la classe métier, double validation du parser, `"1.2.3"` accepté en silence.
+* **Leçon (frontière serveur/renderer)** : les routes Next (serveur) ne peuvent pas écrire l'IndexedDB du renderer → la clé vit côté main process (fichier) et remonte par IPC, jamais servie en HTTP (même loopback). La frontière POC §13.3 reste l'invariant structurant.
+* **Leçon (clé en clair)** : le fichier est en clair (comme device-config, pas `safeStorage` comme le WiFi). Invariant tenu = « jamais servi / jamais loggé », pas « chiffré au repos ». Migration `safeStorage` = Phase 4 (§13.6).
+
+### 13.1 À valider sur le terrain (retours attendus)
+
+1. Écran providers démarre **vide** (`none`), rien de pré-rempli.
+2. Cascade : choisir un provider révèle modèle/voix/clé et cache le reste ; la clé n'apparaît que pour les providers à clé.
+3. Envoi : `device-config` (sans clé) puis `POST /api/credentials` par provider distinct.
+4. `provider-status` renvoie `configured` + `sk-****` — jamais la clé.
+5. **Le test qui compte** : l'assistant parle avec la vraie clé et le bon modèle (un appel fournisseur réussit ; sinon, le log doit montrer `credential` **masqué**, jamais en clair).
+6. Voix temps réel : outils (heure, date, calcul, timers) répondent ; le timer déclenche chime + annonce.
+7. Strip markdown : un lien n'est ni épelé à voix ni affiché en URL.
+
+### 13.2 À trancher (décisions produit en attente)
+
+1. **Clé au repos** : clair (actuel) vs `safeStorage` chiffré → Phase 4.
+2. **Dédup clé par famille** : `openai` et `openai-realtime` demandent la même clé deux fois (dédup par id, pas par famille). Améliorable si gênant.
+3. **Aspect final de l'écran providers** : l'utilisateur le trouve « mieux » mais pas pleinement satisfait de la finition → passe de polish UI à prévoir (hiérarchie, groupement, états vides).
+4. **Token OpenClaw** : toujours non lu automatiquement (reste au plan §7.1) ; le Mobile ne demande pas de clé pour openclaw (cohérent avec le protocole).
+5. **Sémantique `configured`** : « une clé existe pour le provider courant du slot » (pas « testée/réussie ») — à confirmer.
+
+### 13.3 Reste
+
+* Validation terrain ci-dessus, puis ajustement éventuel de la granularité des commits.
+* Tests Electron **1005** / Mobile **186**, `tsc`/lint/build OK — mais **zéro validation terrain** à ce stade (l'utilisateur ne peut pas tout tester ce soir).

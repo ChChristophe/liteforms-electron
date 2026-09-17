@@ -5,6 +5,8 @@ import { buildPersonaPrompt, createLlmAdapter, getDefaultProviderConfig, getProv
 import { sanitizeAssistantText } from "@/lib/llm/output";
 import { LocalGemmaWorkerClient } from "@/lib/llm/localGemmaWorker";
 import type { BaseProviderConfig, ChatMessage, LlmProviderId } from "@/lib/llm";
+import { createToolRegistry } from "@/lib/llm/toolRegistry";
+import type { TimerExpiredDetail, TimerManager } from "@/lib/timer";
 import {
   createAsrAdapter,
   createAsrRealtimeSession,
@@ -21,10 +23,12 @@ import {
   createGoogleLiveBrowserSession,
   createOpenAiRealtimeBrowserSession
 } from "@/lib/speech";
+import { playTimerChime } from "@/lib/speech/timerChime";
 import type { GoogleLiveBrowserSession, OpenAiRealtimeBrowserSession, RealtimeVoiceConfig, TtsResult } from "@/lib/speech";
 import { DistilWhisperWorkerClient, KokoroWorkerClient } from "@/lib/speech/workerClient";
 import type { AsrConfig, AsrRealtimeSession, TtsConfig } from "@/lib/speech";
 import { dispatchAvatarLipSyncFrame } from "@/lib/avatar/lipSyncEvents";
+import { ensureCredential, resolveProviderCredential } from "@/lib/credential/credentialBridge";
 import {
   capPreloadUiProgress,
   clampModelProgress,
@@ -76,6 +80,11 @@ type ChatPanelProps = {
    * window; otherwise it is scheduled locally (fallback).
    */
   handleRealtimeAudioForHologram?: (blob: Blob) => Promise<boolean> | boolean;
+  /**
+   * Timer manager owned by the page. Kept outside this component so timers
+   * survive the remounts triggered by `chatPanelKey` changes.
+   */
+  timerManager: TimerManager;
 };
 
 type ChatStatus = "idle" | "streaming" | "error";
@@ -159,7 +168,8 @@ export function ChatPanel({
   onConfigChange,
   onOpenConfigure,
   handleTtsForHologram,
-  handleRealtimeAudioForHologram
+  handleRealtimeAudioForHologram,
+  timerManager
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     character.greeting ? [{ role: "assistant" as const, content: character.greeting }] : []
@@ -230,6 +240,12 @@ export function ChatPanel({
   // slow connections where Transformers.js fires many small-chunk events.
   const pendingProgressRef = useRef<Map<LocalModelId, Partial<LocalModelLoadState>>>(new Map());
   const progressFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Stable wrapper so the timer subscription always calls the latest handler
+  // (which closes over the current config and realtime session refs).
+  const timerExpiredHandlerRef = useRef<((detail: TimerExpiredDetail) => void) | null>(null);
+
+  /** Provider-agnostic tool executor bound to the page-owned timer manager. */
+  const toolRegistry = useMemo(() => createToolRegistry({ timerManager }), [timerManager]);
 
   /** IDs of local models that are currently wanted based on configured providers. */
   const activeLocalModelIds = useMemo<Set<LocalModelId>>(() => {
@@ -273,6 +289,12 @@ export function ChatPanel({
   useEffect(() => {
     micModeRef.current = micMode;
   }, [micMode]);
+
+  // Listen for timer expirations and forward them to the active Realtime session.
+  useEffect(() => {
+    const unsubscribe = timerManager.onExpired((detail) => timerExpiredHandlerRef.current?.(detail));
+    return unsubscribe;
+  }, [timerManager]);
 
   useEffect(() => {
     if (messageListRef.current) {
@@ -573,10 +595,10 @@ export function ChatPanel({
     setMessages([...nextMessages, { role: "assistant", content: "" }]);
 
     try {
-      const normalizedConfig = normalizeProviderConfig(config);
+      const normalizedConfig = normalizeProviderConfig(await ensureCredential(config));
       const adapter = createLlmAdapter({ config: normalizedConfig, localGemmaWorker: localGemmaWorkerRef.current });
       const usesRealtimeVoice = isRealtimeVoiceProvider(realtimeVoiceConfig.provider);
-      const ttsAdapter = usesRealtimeVoice ? null : createTtsAdapter({ config: ttsConfig, worker: kokoroWorkerRef.current });
+      const ttsAdapter = usesRealtimeVoice ? null : createTtsAdapter({ config: await ensureCredential(ttsConfig), worker: kokoroWorkerRef.current });
 
       let responseText = "";
       const ttsBuffer = new IncrementalSpeechBuffer();
@@ -713,7 +735,7 @@ export function ChatPanel({
     setSpeechError("");
     setSpeechStatus("testing");
     try {
-      const adapter = createTtsAdapter({ config: ttsConfig, worker: kokoroWorkerRef.current });
+      const adapter = createTtsAdapter({ config: await ensureCredential(ttsConfig), worker: kokoroWorkerRef.current });
       const testText = "Liteforms voice test.";
       setLastTtsDebug(`TTS: "${testText}"`);
       const audio = await adapter.synthesize(testText);
@@ -756,7 +778,8 @@ export function ChatPanel({
   async function startRealtimeVoiceSession({ captureMicrophone }: { captureMicrophone: boolean }) {
     if (!isActiveRealtimeVoiceConfig(realtimeVoiceConfig)) return null;
     const providerLabel = realtimeProviderLabel(realtimeVoiceConfig.provider);
-    if (!realtimeVoiceConfig.credential) {
+    const credential = realtimeVoiceConfig.credential ?? await resolveProviderCredential(realtimeVoiceConfig.provider);
+    if (!credential) {
       setSpeechError(`${providerLabel} credential is required.`);
       setSpeechStatus("error");
       return null;
@@ -818,6 +841,7 @@ export function ChatPanel({
       const session = sessionFactory({
         config: {
           ...realtimeVoiceConfig,
+          credential,
           instructions: buildPersonaPrompt({
             name: character.name,
             pronouns: character.pronouns,
@@ -853,6 +877,18 @@ export function ChatPanel({
             }
           })();
         },
+        onFunctionCall: async (id, name, args) => {
+          setLastAsrDebug(`${providerLabel}: function_call → ${name}`);
+          try {
+            const result = await toolRegistry.execute(name, args);
+            session.sendFunctionCallOutput(id, result);
+            session.createResponse();
+          } catch (err) {
+            setLastAsrDebug(`${providerLabel}: function_call error → ${err}`);
+            session.sendFunctionCallOutput(id, "Error executing function");
+            session.createResponse();
+          }
+        },
         onError: (caught) => {
           lipSyncActive = false;
           setSpeechError(caught.message);
@@ -871,6 +907,38 @@ export function ChatPanel({
     }
   }
 
+  timerExpiredHandlerRef.current = async (detail) => {
+    // Play a short chime to alert the user.
+    playTimerChime();
+
+    const label = detail.label || "Timer";
+    const minutes = detail.duration_minutes || 0;
+    const durationText = minutes > 0 ? ` de ${minutes} minute${minutes > 1 ? "s" : ""}` : "";
+    const notificationText = `[System: timer expiré] Le timer "${label}"${durationText} est terminé. Annonce-le à l'utilisateur de manière naturelle et concise. N'appelle aucun outil, le timer est déjà terminé.`;
+
+    // Add to chat history so the user sees it.
+    setMessages((prev) => [...prev, { role: "assistant" as const, content: `⏰ Le timer "${label}"${durationText} est terminé.` }]);
+
+    // If a realtime voice session is active, push through it for vocal announcement.
+    const session = googleLiveSessionRef.current;
+    if (session?.isActive()) {
+      session.sendText(notificationText);
+      return;
+    }
+
+    // Otherwise, open a new Realtime session and send the notification (like a text message).
+    if (isActiveRealtimeVoiceConfig(realtimeVoiceConfig) || isRealtimeVoiceProvider(config.provider)) {
+      try {
+        const activeSession = await startRealtimeVoiceSession({ captureMicrophone: false });
+        if (activeSession?.isActive()) {
+          activeSession.sendText(notificationText);
+        }
+      } catch (err) {
+        console.warn("[ChatPanel] Timer notification Realtime session failed", err);
+      }
+    }
+  };
+
   async function startMicRecording() {
     setSpeechError("");
     setLastAsrDebug("STT: recording...");
@@ -880,7 +948,7 @@ export function ChatPanel({
       const sessionId = micSessionIdRef.current + 1;
       micSessionIdRef.current = sessionId;
       const session = createAsrRealtimeSession({
-        config: asrConfig,
+        config: await ensureCredential(asrConfig),
         worker: distilWhisperWorkerRef.current,
         onPartial: (text) => {
           if (micSessionIdRef.current !== sessionId) return;
@@ -1063,7 +1131,7 @@ export function ChatPanel({
 
   async function transcribeRecordedAudio(audio: Blob, { autoSubmit = false }: { autoSubmit?: boolean } = {}) {
     try {
-      const adapter = createAsrAdapter({ config: asrConfig, worker: distilWhisperWorkerRef.current });
+      const adapter = createAsrAdapter({ config: await ensureCredential(asrConfig), worker: distilWhisperWorkerRef.current });
       const result = await adapter.transcribe(audio);
       const text = result.text.trim();
       setLastAsrDebug(text ? `STT: "${text}"` : "STT: finished with no transcript");

@@ -69,6 +69,9 @@ describe("LLM_PROVIDER_OPTIONS", () => {
       tested: true
     });
     expect(option?.models?.map((model) => model.id)).toContain("gpt-realtime-2");
+    expect(option?.models?.map((model) => model.id)).toEqual(
+      expect.arrayContaining(["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2", "gpt-realtime"])
+    );
     expect(option?.voices?.map((voice) => voice.id)).toEqual(expect.arrayContaining(["coral", "marin", "verse"]));
     expect(CREDENTIAL_PROVIDER_IDS).toContain("openai-realtime");
   });

@@ -1,12 +1,59 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildGoogleLiveSetupMessage,
   buildGoogleLiveWebSocketUrl,
+  createGoogleLiveBrowserSession,
   mapGoogleLiveEvent,
   normalizeGoogleLiveVoiceConfig,
   validateGoogleLiveWebSocketUrl
 } from "./googleLive";
 import { STT_PROVIDER_OPTIONS } from "./providerOptions";
+
+class MockWebSocket {
+  static latest: MockWebSocket | null = null;
+  static OPEN = 1;
+
+  readyState = MockWebSocket.OPEN;
+  sent: string[] = [];
+  handlers: Record<string, Array<(event: unknown) => void>> = {};
+
+  constructor() {
+    MockWebSocket.latest = this;
+  }
+
+  addEventListener(type: string, handler: (event: unknown) => void) {
+    (this.handlers[type] ??= []).push(handler);
+  }
+
+  send(data: string) {
+    this.sent.push(data);
+  }
+
+  close() {
+    this.handlers.close?.forEach((handler) => handler({}));
+  }
+
+  emit(type: string, event: unknown = {}) {
+    this.handlers[type]?.forEach((handler) => handler(event));
+  }
+}
+
+const googleConfig = {
+  provider: "google-live" as const,
+  credential: "AIza-test",
+  instructions: "PERSONA"
+};
+
+function startGoogleSession(input: { onFunctionCall?: (id: string, name: string, args: string) => void; onEnd?: () => void }) {
+  const session = createGoogleLiveBrowserSession({
+    config: googleConfig,
+    ...input,
+    WebSocketCtor: MockWebSocket as unknown as typeof WebSocket
+  });
+  session.start();
+  MockWebSocket.latest!.emit("open");
+  return session;
+}
 
 describe("Google Live realtime voice parity", () => {
   it("normalizes Google Live as a realtime voice capability", () => {
@@ -99,5 +146,75 @@ describe("Google Live realtime voice parity", () => {
   it("does not register Google Live as an STT-only streaming provider", () => {
     expect(STT_PROVIDER_OPTIONS.map((option) => option.id)).not.toContain("google");
     expect(STT_PROVIDER_OPTIONS.map((option) => option.id)).not.toContain("google-live");
+  });
+});
+
+describe("Google Live function calling", () => {
+  beforeEach(() => {
+    MockWebSocket.latest = null;
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("does not advertise tools or tool instructions without a function handler", () => {
+    startGoogleSession({});
+    const setup = JSON.parse(MockWebSocket.latest!.sent[0]);
+    expect(setup.setup.tools).toBeUndefined();
+    expect(setup.setup.systemInstruction.parts[0].text).toBe("PERSONA");
+  });
+
+  it("maps the shared catalogue to functionDeclarations when a handler is provided", () => {
+    startGoogleSession({ onFunctionCall: vi.fn() });
+    const setup = JSON.parse(MockWebSocket.latest!.sent[0]);
+    const declarations = setup.setup.tools[0].functionDeclarations;
+    expect(setup.setup.tools).toHaveLength(1);
+    expect(declarations).toHaveLength(7);
+    expect(declarations[0]).toEqual({
+      name: "get_current_time",
+      description: expect.any(String),
+      parameters: { type: "OBJECT", properties: {}, required: [] }
+    });
+    expect(declarations.map((declaration: { name: string }) => declaration.name)).not.toContain("openclaw_web_search");
+    expect(setup.setup.systemInstruction.parts[0].text).toContain("If you are unsure whether to use a tool, USE IT");
+    expect(setup.setup.systemInstruction.parts[0].text).toContain("PERSONA");
+  });
+
+  it("uses the function name as the call id and raises it once", () => {
+    const onFunctionCall = vi.fn();
+    startGoogleSession({ onFunctionCall });
+    MockWebSocket.latest!.emit("message", {
+      data: JSON.stringify({
+        serverContent: {
+          modelTurn: { parts: [{ functionCall: { name: "get_current_time", args: {} } }] },
+          turnComplete: true
+        }
+      })
+    });
+    expect(onFunctionCall).toHaveBeenCalledTimes(1);
+    expect(onFunctionCall).toHaveBeenCalledWith("get_current_time", "get_current_time", "{}");
+  });
+
+  it("sends the functionResponse then turnComplete payloads after setup", () => {
+    const session = startGoogleSession({ onFunctionCall: vi.fn() });
+    MockWebSocket.latest!.emit("message", { data: JSON.stringify({ setupComplete: true }) });
+    MockWebSocket.latest!.sent.length = 0;
+    session.sendFunctionCallOutput("get_current_time", "Il est 10:00.");
+    session.createResponse();
+    expect(JSON.parse(MockWebSocket.latest!.sent[0])).toEqual({
+      clientContent: {
+        turns: [
+          {
+            role: "function",
+            parts: [{ functionResponse: { name: "get_current_time", response: { result: "Il est 10:00." } } }]
+          }
+        ],
+        turnComplete: true
+      }
+    });
+    expect(JSON.parse(MockWebSocket.latest!.sent[1])).toEqual({ clientContent: { turnComplete: true } });
   });
 });

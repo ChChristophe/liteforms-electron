@@ -327,7 +327,13 @@ const RAW_STT_PROVIDER_OPTIONS: Array<Omit<AsrProviderOption, "tested">> = [
     label: "OpenAI",
     defaultBaseUrl: "https://api.openai.com/v1",
     defaultModel: "gpt-4o-transcribe",
-    models: [{ id: "gpt-4o-transcribe", label: "GPT-4o Transcribe" }],
+    models: [
+      { id: "gpt-transcribe", label: "GPT Transcribe" },
+      { id: "gpt-4o-transcribe", label: "GPT-4o Transcribe" },
+      { id: "gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe" },
+      { id: "gpt-4o-transcribe-diarize", label: "GPT-4o Transcribe Diarize" },
+      { id: "whisper-1", label: "Whisper" }
+    ],
     needsCredential: true
   },
   {
