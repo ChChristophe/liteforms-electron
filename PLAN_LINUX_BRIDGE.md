@@ -6,7 +6,9 @@
 > probe natif du 16/09 (§5) ont été **commités ensemble** dans le commit
 > `Jarvis: fix native Bridge probe on Linux and validate LKG hologram` après
 > validation terrain (voir §7 pour les preuves de log). Phase Linux Looking Glass
-> **close** côté affichage ; reste listé en §7.4.
+> **close** côté affichage ; points ouverts en §7.4, et **un point à vérifier en
+> §8** (le daemon LGB est-il dans le circuit ? — non bloquant, test à faire au
+> prochain cycle).
 
 ## 1. Contexte
 
@@ -239,6 +241,9 @@ l'affichage. **Ne pas partir en chasse** sans symptôme visible côté LKG.
   polyfill rend le quilt côté client et le probe natif fournit la calibration.
   La bascule « probe natif → websocket JS » prévue au plan Directeur est
   **abandonnée** pour l'appliance : le probe natif fonctionne.
+  ⚠️ **Non vérifié terrain** sur l'appliance (le `.sh` Bridge 2.6.3 y était
+  installé en même temps que le correctif) → **voir §8**. À traiter comme
+  « structurellement fondé, pas encore prouvé ». Non bloquant.
 - Limite connue : si un probe expire **et** que l'app quitte dans les 2 s, le
   SIGKILL différé (`unref`) peut ne pas partir → process orphelin possible.
   Vérifier avec `ps` si suspicion ; correctif volatil seulement si observé.
@@ -247,3 +252,96 @@ l'affichage. **Ne pas partir en chasse** sans symptôme visible côté LKG.
   tort, discuter d'espacer le poll (décision produit, non tranchée).
 - **Règle commit (respectée)** : un seul commit pour le feature complet validé
   terrain, jamais de fix-commit intermédiaire.
+
+---
+
+## 8. À VÉRIFIER (non bloquant) — le daemon Looking Glass Bridge est-il dans le circuit ?
+
+> **Statut : non tranché.** À exécuter lors d'un prochain cycle terrain
+> (rebuild ou simple relance de l'app). Rien ne bloque la suite d'ici là.
+
+**Pourquoi la question se pose** : le `.sh` Looking Glass Bridge 2.6.3 et le correctif
+du probe ont été installés sur l'appliance **au même moment**, donc le succès du
+17/09 n'est pas attribué par preuve directe. Il faut savoir **ce qui est réellement
+nécessaire sur chaque unité vendue** — question d'image dorée, pas détail théorique.
+
+**Ce que dit l'analyse de code (fort, mais pas une preuve terrain)** :
+
+- le probe charge `libbridge_inproc.so` **dans son propre process** et lit des
+  **retours de fonctions C** (`initialize_bridge`, `get_displays`,
+  `get_calibration_for_display`… — `electron/nativeBridgeProbe.ts`) ; aucun client
+  websocket/HTTP dans ce fichier ;
+- `components/hologram/hologramAutoOpen.ts:25` exige des **bounds** ; seul le
+  chemin natif en fournit (`lib/avatar/bridgeConnection.ts` : `bridge-js` renvoie
+  `connected` **sans** `display`) ⇒ le chemin daemon ne peut pas, par construction,
+  ouvrir la fenêtre hologramme ;
+- `libbridge_inproc.so` importe les symboles de tray `app_indicator_new` /
+  `_set_menu` / `_set_status` → c'est le **moteur** (qui se crée une icône), pas un
+  client ; il vient de `Bridge-Python-SDK/bin/ubuntu` (« driver Bridge embarqué »).
+
+**Le doute résiduel légitime** : `libbridge_inproc.so` **pourrait** causer en
+interne avec un service sans que ça se voie dans notre code, et surtout
+l'installeur `.sh` a peut-être posé **des paquets système dont le correctif dépend**
+(`libayatana-appindicator3.so.1` — cf. §5). Dans ce cas le `.sh` ne serait pas
+nécessaire *en tant que service*, mais l'aurait été *en tant que source de paquets*.
+C'est le seul point qui changerait l'image dorée.
+
+### 8.1 Test A — le daemon tourne-t-il seulement ? (30 s, aucune modification)
+
+À lancer **pendant que l'hologramme est affiché** :
+
+```bash
+ps -ef | grep -i -E 'looking|glass' | grep -v grep
+systemctl list-units --all --no-pager | grep -i -E 'looking|glass'
+ss -tlnp 2>/dev/null | grep -E '11222|1090'
+```
+
+Si rien ne tourne et que l'holo s'affiche → le daemon n'est pas dans le circuit.
+(Le port `11222` est le protocole HoloPlay historique — cf. `holoplay-core` :
+`new WebSocket('ws://localhost:11222/driver')` ; que LGB moderne ne le serve plus
+est justement pourquoi le chemin `bridge-js` ne peut pas fournir la calibration.)
+
+### 8.2 Test B — qu'a réellement installé le `.sh` ? (30 s, aucune modification)
+
+C'est le test qui répond à la vraie question produit :
+
+```bash
+dpkg -l | grep -i glass
+grep -i -E 'looking|ayatana|appindicator' /var/log/apt/history.log | tail -40
+ldd /tmp/.mount_*/resources/bridge/linux-x64/libbridge_inproc.so | grep 'not found'
+```
+
+### 8.3 Test C — la preuve définitive (2 min, réversible)
+
+Arrêter le daemon, relancer l'app, regarder le LKG :
+
+```bash
+sudo systemctl stop <nom-du-service>     # nom exact donné par le test A
+# ou, après avoir repéré le PID :  kill <pid>
+```
+
+Variante encore plus propre, sans lancer l'Electron : exécuter **la commande probe
+seule de §7.2**, daemon arrêté. Si elle affiche `available:true` toute seule, c'est
+tranché : la librairie fait le travail sans personne à l'écoute.
+
+Rien n'est détruit : un `systemctl start` (ou un redémarrage) remet l'état.
+
+### 8.4 Lecture des résultats
+
+| Résultat du test C | Conclusion | Conséquence image dorée |
+|---|---|---|
+| Le LKG affiche toujours | Moteur embarqué confirmé, daemon décoratif | `apt install libayatana-appindicator3-1` (dépendance du moteur) |
+| Le LKG ne s'affiche plus | Le `.sh` était porteur — **service** ou **paquets** à distinguer via le test B | N'installer que ce que le test B désigne comme réellement nécessaire |
+
+Dans les deux cas, **on n'installe pas le logiciel Looking Glass en tant que tel** :
+au pire on installe quelques paquets Ubuntu dont l'installeur s'est servi comme
+livraison.
+
+### 8.5 À mettre à jour selon le résultat
+
+- `PLAN_LINUX_BRIDGE.md` §7.4 + en-tête : retirer la réserve « non vérifié ».
+- `PLAN_DIRECTEUR.md` §6.1 / §11 / backlog : idem si la conclusion change.
+- `native/bridge/README.md` : compléter la liste des dépendances runtime si le
+  test B révèle des paquets non documentés.
+- Règle : **doc d'abord, commit ensuite** — même logique que pour le reste
+  (pas d'affirmation non vérifiée écrite comme un fait).
