@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { BoxGeometry, Mesh, MeshBasicMaterial, Object3D } from "three";
+import { BoxGeometry, Mesh, MeshBasicMaterial } from "three";
 import {
   computeLookingGlassCameraArrayState,
   computeLookingGlassFocalPoint,
   computeLkgInlineViewSize,
   withLookingGlassCameraPose,
   withLookingGlassTarget,
+  withLookingGlassZoom,
 } from "./lookingGlassIntegration";
+import { POSE_ZOOM_MAX, POSE_ZOOM_MIN } from "./avatarPose";
 
 function makeBox(width: number, height: number, depth: number): Mesh {
   return new Mesh(new BoxGeometry(width, height, depth), new MeshBasicMaterial());
@@ -176,6 +178,79 @@ describe("computeLookingGlassCameraArrayState", () => {
     expect(result.lastViewPosition.x).toBeGreaterThan(result.centerPosition.x);
     expect(result.firstViewPosition.z).toBeCloseTo(result.centerPosition.z);
     expect(result.lastViewPosition.z).toBeCloseTo(result.centerPosition.z);
+  });
+});
+
+describe("withLookingGlassZoom", () => {
+  // Tuned appliance Looking Glass camera pose (mirrors AvatarScene constants).
+  const CAMERA_CENTER = { x: -0.071, y: 0.856, z: 6.234 };
+  const FOCAL_TARGET = { x: 0.003, y: 0.877, z: 0.234 };
+  const VIEW_CONTROLS = { viewCone: 50 * (Math.PI / 180), numViews: 48 };
+
+  function baseFocalPoint() {
+    return computeLookingGlassFocalPoint(makeBox(1, 1, 1));
+  }
+
+  /** Same composition as AvatarScene.updateLookingGlassPose. */
+  function posedFocalPoint(zoom: number) {
+    return withLookingGlassTarget(
+      withLookingGlassCameraPose(
+        withLookingGlassZoom(baseFocalPoint(), zoom),
+        CAMERA_CENTER,
+        FOCAL_TARGET
+      ),
+      FOCAL_TARGET
+    );
+  }
+
+  function posedState(zoom: number) {
+    return computeLookingGlassCameraArrayState({ ...posedFocalPoint(zoom), ...VIEW_CONTROLS });
+  }
+
+  it("leaves targetDiam, orbitDistance and the camera center untouched at zoom 1", () => {
+    const base = baseFocalPoint();
+    const state = posedState(1);
+
+    expect(posedFocalPoint(1).targetDiam).toBeCloseTo(base.targetDiam);
+    expect(state.orbitDistance).toBeCloseTo(6.000493, 4);
+    expect(state.centerPosition.x).toBeCloseTo(CAMERA_CENTER.x, 3);
+    expect(state.centerPosition.y).toBeCloseTo(CAMERA_CENTER.y, 3);
+    expect(state.centerPosition.z).toBeCloseTo(CAMERA_CENTER.z, 3);
+  });
+
+  it("halves targetDiam at zoom 2 while keeping orbitDistance and the camera fixed", () => {
+    const base = baseFocalPoint();
+    const zoom1 = posedState(1);
+    const zoom2 = posedState(2);
+
+    expect(posedFocalPoint(2).targetDiam).toBeCloseTo(base.targetDiam / 2);
+    // orbitDistance is the objective judge: the camera must not move.
+    expect(zoom2.orbitDistance).toBeCloseTo(zoom1.orbitDistance, 6);
+    expect(zoom2.centerPosition.x).toBeCloseTo(zoom1.centerPosition.x, 6);
+    expect(zoom2.centerPosition.y).toBeCloseTo(zoom1.centerPosition.y, 6);
+    expect(zoom2.centerPosition.z).toBeCloseTo(zoom1.centerPosition.z, 6);
+  });
+
+  it("clamps an out-of-bounds zoom before scaling targetDiam", () => {
+    const base = baseFocalPoint();
+
+    expect(withLookingGlassZoom(base, POSE_ZOOM_MIN).targetDiam).toBeCloseTo(
+      base.targetDiam / POSE_ZOOM_MIN
+    );
+    expect(withLookingGlassZoom(base, POSE_ZOOM_MAX).targetDiam).toBeCloseTo(
+      base.targetDiam / POSE_ZOOM_MAX
+    );
+    expect(withLookingGlassZoom(base, 0.01).targetDiam).toBeCloseTo(base.targetDiam / POSE_ZOOM_MIN);
+    expect(withLookingGlassZoom(base, 99).targetDiam).toBeCloseTo(base.targetDiam / POSE_ZOOM_MAX);
+  });
+
+  it("narrows the field of view as zoom grows (screen size ∝ 1 / targetDiam)", () => {
+    const zoom1 = posedFocalPoint(1);
+    const zoom2 = posedFocalPoint(2);
+
+    expect(zoom2.fovy).toBeLessThan(zoom1.fovy);
+    // Apparent size is inversely proportional to targetDiam at constant distance.
+    expect(zoom1.targetDiam / zoom2.targetDiam).toBeCloseTo(2);
   });
 });
 

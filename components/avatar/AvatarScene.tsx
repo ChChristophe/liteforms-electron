@@ -27,9 +27,16 @@ import {
   computeLookingGlassFocalPoint,
   withLookingGlassCameraPose,
   withLookingGlassTarget,
+  withLookingGlassZoom,
 } from "@/lib/avatar/lookingGlassIntegration";
 import type { LookingGlassFocalPoint } from "@/lib/avatar/lookingGlassIntegration";
 import { applyEnvironmentTint, loadEnvironmentGlb } from "@/lib/avatar/environmentLoader";
+import {
+  DEFAULT_AVATAR_POSE,
+  applyAvatarPose,
+  clampZoom,
+  type AvatarPoseConfig,
+} from "@/lib/avatar/avatarPose";
 import { applyVrmMoodPreset } from "@/lib/avatar/vrmExpressionController";
 import {
   configureRendererShadows,
@@ -82,6 +89,8 @@ type AvatarSceneProps = {
   hideVrButton?: boolean;
   environmentTint?: string;
   expressionPreset?: string;
+  /** Presentation pose from the device-config; identity pose by default. */
+  pose?: AvatarPoseConfig;
 };
 
 const DEFAULT_MODEL_URL = "/models/lobsterEdit.vrm";
@@ -100,6 +109,12 @@ const PREVIEW_CAMERA_INITIAL_TARGET = new Vector3(
 );
 const LOOKING_GLASS_CAMERA_CENTER = new Vector3(-0.071, 0.856, 6.234);
 const LOOKING_GLASS_FOCAL_TARGET = new Vector3(0.003, 0.877, 0.234);
+// Preview camera framing, frozen once: the pose zoom only divides the distance
+// along this direction (mirrors the Mobile previewRuntime `applyZoom`).
+const PREVIEW_CAMERA_DIRECTION = PREVIEW_CAMERA_INITIAL_POSITION.clone()
+  .sub(PREVIEW_CAMERA_INITIAL_TARGET)
+  .normalize();
+const PREVIEW_CAMERA_DISTANCE = PREVIEW_CAMERA_INITIAL_POSITION.distanceTo(PREVIEW_CAMERA_INITIAL_TARGET);
 
 // Singleton guard: the LKG polyfill overrides navigator.xr globally and must
 // only be constructed once per page lifetime.
@@ -262,11 +277,15 @@ function formatVector3(value: Vector3): string {
   return `${value.x.toFixed(3)},${value.y.toFixed(3)},${value.z.toFixed(3)}`;
 }
 
-export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false, environmentTint, expressionPreset }: AvatarSceneProps) {
+export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false, environmentTint, expressionPreset, pose = DEFAULT_AVATAR_POSE }: AvatarSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const environmentObjectRef = useRef<Object3D | undefined>(undefined);
   const environmentTintRef = useRef<string | undefined>(environmentTint);
   const expressionPresetRef = useRef<string | undefined>(expressionPreset);
+  // Latest pose for the async scene setup, and the live applier registered by
+  // the scene effect so a pose change applies without rebuilding the scene.
+  const poseRef = useRef<AvatarPoseConfig>(pose);
+  const applyPoseRef = useRef<((pose: AvatarPoseConfig) => void) | undefined>(undefined);
   const vrmRef = useRef<VRM | undefined>(undefined);
   const idleAnimatorRef = useRef<VrmIdleAnimator | undefined>(undefined);
   const loaderRef = useRef<GLTFLoader | undefined>(undefined);
@@ -286,6 +305,13 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
     expressionPresetRef.current = expressionPreset;
     applyVrmMoodPreset(vrmRef.current?.expressionManager, expressionPreset);
   }, [expressionPreset]);
+
+  // Apply the incoming presentation pose to the live scene; the ref keeps the
+  // latest pose for the post-load pass below.
+  useEffect(() => {
+    poseRef.current = pose;
+    applyPoseRef.current?.(pose);
+  }, [pose]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -430,11 +456,6 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       const scene = new Scene();
       scene.background = new Color("#15130f");
 
-      const restorePreviewCamera = () => {
-        camera.position.copy(PREVIEW_CAMERA_INITIAL_POSITION);
-        camera.lookAt(PREVIEW_CAMERA_INITIAL_TARGET);
-      };
-
       const camera = new PerspectiveCamera(
         AVATAR_CAMERA_VERTICAL_FOV_DEGREES,
         AVATAR_CAMERA_ASPECT,
@@ -443,6 +464,20 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       );
       camera.position.copy(PREVIEW_CAMERA_INITIAL_POSITION);
       camera.lookAt(PREVIEW_CAMERA_INITIAL_TARGET);
+
+      const applyCameraZoom = (zoom: number) => {
+        camera.position
+          .copy(PREVIEW_CAMERA_INITIAL_TARGET)
+          .addScaledVector(PREVIEW_CAMERA_DIRECTION, PREVIEW_CAMERA_DISTANCE / clampZoom(zoom));
+        camera.lookAt(PREVIEW_CAMERA_INITIAL_TARGET);
+      };
+
+      const restorePreviewCamera = () => {
+        camera.position.copy(PREVIEW_CAMERA_INITIAL_POSITION);
+        camera.lookAt(PREVIEW_CAMERA_INITIAL_TARGET);
+        // Keep the configured pose zoom across resets (model load, session end).
+        applyCameraZoom(poseRef.current.zoom);
+      };
 
       const modelDragRotation = createModelDragRotationController(() => currentVrm?.scene);
       modelPointerDownListener = (event: PointerEvent) => {
@@ -569,6 +604,58 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
       loaderRef.current = loader;
 
+      // Framed model transform, captured once the model is framed; the pose
+      // yaw/depth are relative to these base values.
+      let baseModelYaw = 0;
+      // Captured once per alcove load from its natural GLB orientation, before
+      // any pose is replayed on it (the loader copies scale/position only).
+      let baseAlcoveYaw = 0;
+      let modelBasePosition: Vector3 | undefined;
+      let lkgFocalPointBase: LookingGlassFocalPoint | undefined;
+
+      const updateLookingGlassPose = (nextPose: AvatarPoseConfig) => {
+        if (!lkgFocalPointBase) return;
+        // Looking Glass apparent subject size is governed by targetDiam, not by
+        // the camera distance: the polyfill derives
+        // orbitDistance = 0.5 * targetDiam / tan(0.5 * fovy) and the framing is
+        // proportional to 1 / targetDiam, so moving the camera would cancel out.
+        // Zoom therefore scales targetDiam while the base camera pose (trackball,
+        // target and distance) is preserved: fovy is re-derived from the zoomed
+        // targetDiam, keeping orbitDistance constant and only narrowing the field.
+        LookingGlassConfig.updateViewControls(
+          withLookingGlassTarget(
+            withLookingGlassCameraPose(
+              withLookingGlassZoom(lkgFocalPointBase, nextPose.zoom),
+              LOOKING_GLASS_CAMERA_CENTER,
+              LOOKING_GLASS_FOCAL_TARGET
+            ),
+            LOOKING_GLASS_FOCAL_TARGET
+          )
+        );
+      };
+
+      // Single applier for both windows: yaws relative to the model/alcove
+      // natural orientation, zoom = camera distance divisor, depth = world-Z
+      // offset along the camera axis (mirrors the Mobile previewRuntime).
+      const applyCurrentPose = (nextPose: AvatarPoseConfig) => {
+        applyAvatarPose(
+          {
+            model: currentVrm?.scene,
+            alcove: environmentObject,
+            camera,
+            cameraCenter: PREVIEW_CAMERA_INITIAL_TARGET,
+            cameraDirection: PREVIEW_CAMERA_DIRECTION,
+            cameraDistance: PREVIEW_CAMERA_DISTANCE,
+            baseAvatarYaw: baseModelYaw,
+            baseAlcoveYaw,
+            modelBasePosition,
+          },
+          nextPose
+        );
+        updateLookingGlassPose(nextPose);
+      };
+      applyPoseRef.current = applyCurrentPose;
+
       loader.load(
         modelUrl,
         async (gltf) => {
@@ -593,9 +680,11 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
           VRMUtils.rotateVRM0(loadedVrm);
           scene.add(loadedVrm.scene);
           setMeshShadowFlags(loadedVrm.scene, true, false);
+          baseModelYaw = loadedVrm.scene.rotation.y;
           runtimeAnimator?.dispose();
           const environmentReference = await frameModel(loadedVrm.scene);
           if (disposed) return;
+          modelBasePosition = loadedVrm.scene.position.clone();
           // Same model in both windows must produce the same transform; a
           // mismatch here is the black-screen (model out of view) candidate.
           logDiagnostic(
@@ -608,16 +697,10 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
 
           // Update the holographic focal plane so the lobster is centred on
           // the convergence point. LookingGlassConfig is the exported singleton;
-          // updateLookingGlassConfig is not in the built bundle.
-          const focalPoint: LookingGlassFocalPoint = withLookingGlassTarget(
-            withLookingGlassCameraPose(
-              computeLookingGlassFocalPoint(loadedVrm.scene),
-              LOOKING_GLASS_CAMERA_CENTER,
-              LOOKING_GLASS_FOCAL_TARGET
-            ),
-            LOOKING_GLASS_FOCAL_TARGET
-          );
-          LookingGlassConfig.updateViewControls(focalPoint);
+          // updateLookingGlassConfig is not in the built bundle. The pose zoom
+          // is applied on top of this base focal point.
+          lkgFocalPointBase = computeLookingGlassFocalPoint(loadedVrm.scene);
+          applyCurrentPose(poseRef.current);
 
           const missingVrm0MouthMorphs = getMissingVrm0MouthMorphTargets(loadedVrm.scene);
 
@@ -638,8 +721,15 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
           }).then((envScene) => {
             environmentObject = envScene;
             environmentObjectRef.current = envScene;
+            // Capture the alcove's natural yaw BEFORE replaying the pose, once
+            // per load, so applyCurrentPose stays correctly relative on every
+            // later pose change (reentrance: this runs before applyCurrentPose).
+            baseAlcoveYaw = envScene.rotation.y;
             environmentObject.visible = !isHldFallbackActive;
             applyEnvironmentTint(environmentObject, environmentTintRef.current);
+            // The alcove loads after the model: replay the pose so alcoveYaw
+            // is not lost (the model-load pass ran with no alcove yet).
+            applyCurrentPose(poseRef.current);
           });
 
           void loadVrmAnimationClip(DEFAULT_IDLE_ANIMATION_URL, loadedVrm, loader).then((clip) => {
@@ -1100,6 +1190,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       vrButton?.remove();
       vrmRef.current = undefined;
       environmentObjectRef.current = undefined;
+      applyPoseRef.current = undefined;
     };
   }, [modelUrl, hideVrButton]);
 

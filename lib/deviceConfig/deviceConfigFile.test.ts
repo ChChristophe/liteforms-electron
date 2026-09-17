@@ -8,7 +8,10 @@ import type { PocDeviceConfig } from "./pocConfig";
 const config: PocDeviceConfig = {
   configVersion: "1.0",
   character: { name: "Clawdia", pronouns: "SHE", personality: "Curieuse.", greeting: "Salut !" },
-  avatar: { modelRef: { id: "lobsterEdit", fileName: "lobsterEdit.vrm", hash: null } },
+  avatar: {
+    modelRef: { id: "lobsterEdit", fileName: "lobsterEdit.vrm", hash: null },
+    pose: { avatarYaw: 0, alcoveYaw: 0, zoom: 1, depth: 0 }
+  },
   environment: { alcoveColor: "#4a90d9" },
   providers: {
     llm: { provider: "openai", model: "gpt-5.5", endpoint: "https://api.openai.com/v1", voiceId: null },

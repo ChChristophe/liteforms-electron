@@ -17,6 +17,8 @@ import {
   loadEnvironmentConfig,
 } from "@/lib/storage/environmentConfig";
 import { MOOD_CONFIG_KEY, loadMoodConfig } from "@/lib/storage/moodConfig";
+import { POSE_CONFIG_KEY, loadPoseOrDefault } from "@/lib/storage/poseConfig";
+import { DEFAULT_AVATAR_POSE, type AvatarPoseConfig } from "@/lib/avatar/avatarPose";
 
 let sharedAudioContext: AudioContext | null = null;
 let liveAnalyser: AnalyserNode | null = null;
@@ -90,6 +92,9 @@ export default function HologramPage() {
   const [mood, setMood] = useState<string | undefined>(() =>
     typeof window === "undefined" ? undefined : loadMoodConfig()?.mood ?? undefined
   );
+  const [pose, setPose] = useState<AvatarPoseConfig>(() =>
+    typeof window === "undefined" ? DEFAULT_AVATAR_POSE : loadPoseOrDefault()
+  );
   const utterChain = useRef<Promise<void>>(Promise.resolve());
   const liveChainRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -112,6 +117,18 @@ export default function HologramPage() {
     const onStorage = (event: StorageEvent) => {
       if (event.key !== null && event.key !== MOOD_CONFIG_KEY) return;
       setMood(loadMoodConfig()?.mood ?? undefined);
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Presentation pose: same cross-window pattern as the mood preset — the main
+  // renderer writes liteforms.poseConfig (from device-config apply) and the
+  // hologram window replays it live, without reloading the VRM.
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== POSE_CONFIG_KEY) return;
+      setPose(loadPoseOrDefault());
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -231,7 +248,7 @@ export default function HologramPage() {
 
   return (
     <div className="hologram-stage">
-      <AvatarScene modelUrl={modelUrl} environmentTint={alcoveColor} expressionPreset={mood} />
+      <AvatarScene modelUrl={modelUrl} environmentTint={alcoveColor} expressionPreset={mood} pose={pose} />
     </div>
   );
 }

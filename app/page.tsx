@@ -18,6 +18,8 @@ import type { AsrConfig, RealtimeVoiceConfig, TtsConfig } from "@/lib/speech";
 import { saveSessionConfig, loadSessionConfig } from "@/lib/storage/sessionConfig";
 import { saveCharacterConfig, loadCharacterConfig } from "@/lib/storage/characterConfig";
 import { loadMoodConfig } from "@/lib/storage/moodConfig";
+import { loadPoseOrDefault } from "@/lib/storage/poseConfig";
+import { DEFAULT_AVATAR_POSE, type AvatarPoseConfig } from "@/lib/avatar/avatarPose";
 import { createIndexedDbVrmRepository } from "@/lib/storage/indexedDbVrmRepository";
 import type { VrmRepository } from "@/lib/storage/vrmRepository";
 import { startPocDeviceConfigPolling, type PocApplyHooks } from "@/lib/deviceConfig/pocClient";
@@ -55,6 +57,9 @@ export default function HomePage() {
   const [isBridgeBannerDismissed, setIsBridgeBannerDismissed] = useState(false);
   const [mood, setMood] = useState<string | null>(() =>
     typeof window === "undefined" ? null : loadMoodConfig()?.mood ?? null
+  );
+  const [pose, setPose] = useState<AvatarPoseConfig>(() =>
+    typeof window === "undefined" ? DEFAULT_AVATAR_POSE : loadPoseOrDefault()
   );
   const showBridgeBanner = bridgeConnected === false && !isBridgeBannerDismissed;
   const {
@@ -126,7 +131,8 @@ export default function HomePage() {
         setModelUrl(URL.createObjectURL(new Blob([stored.arrayBuffer])));
         setRestoredVrmFileName(stored.fileName);
       },
-      onMoodPreset: (preset) => setMood(preset)
+      onMoodPreset: (preset) => setMood(preset),
+      onPose: (next) => setPose(next)
     });
 
     let stopPocDeviceConfigPolling: (() => void) | undefined;
@@ -312,6 +318,7 @@ export default function HomePage() {
             modelUrl={modelUrl}
             hideVrButton
             expressionPreset={mood ?? undefined}
+            pose={pose}
           />
         )}
       </section>

@@ -7,6 +7,12 @@
 // tokens and WiFi passwords in this payload.
 
 import { VALID_MOOD_PRESETS } from "@/lib/storage/moodConfig";
+import {
+  DEFAULT_AVATAR_POSE,
+  clampDepth,
+  clampZoom,
+  type AvatarPoseConfig,
+} from "@/lib/avatar/avatarPose";
 
 export type PocCharacterConfig = {
   name: string;
@@ -27,7 +33,8 @@ export type PocDeviceConfig = {
   avatar: {
     mood?: string;
     modelRef?: PocModelRef;
-    pose?: Record<string, number>;
+    /** Always resolved to the contract defaults when absent/partial. */
+    pose: AvatarPoseConfig;
   };
   environment: {
     alcoveColor: string;
@@ -92,15 +99,8 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
   if (avatar.modelRef !== undefined && modelRef === null) {
     return { error: "MODEL_REF_UNKNOWN", message: "avatar.modelRef must include id and fileName" };
   }
-  const pose = typeof avatar.pose === "object" && avatar.pose !== null
-    ? Object.fromEntries(
-      Object.entries(avatar.pose as Record<string, unknown>).filter(([key, value]): [string, number] | false => {
-        if (typeof value === "number") return [key, value];
-        warnings.push(`pose.${key} ignored (not a number)`);
-        return false;
-      })
-    ) as Record<string, number>
-    : undefined;
+  const { pose, warnings: poseWarnings } = parseAvatarPose(avatar.pose);
+  warnings.push(...poseWarnings);
   // avatar.mood: null ("Défaut" on the Mobile) and absent are both legal; only
   // a valid preset name is kept, anything else becomes a warning (never a 400).
   let mood: string | undefined;
@@ -112,8 +112,6 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
       warnings.push(`avatar.mood \`${String(rawMood)}\` ignored (unknown preset)`);
     }
   }
-  if (pose && Object.keys(pose).length > 0) warnings.push("avatar.pose accepted but not applied in this POC (pose port pending)");
-
   return {
     warnings,
     config: {
@@ -122,7 +120,7 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
       avatar: {
         ...(mood !== undefined ? { mood } : {}),
         ...(modelRef ? { modelRef } : {}),
-        ...(pose ? { pose } : {})
+        pose
       },
       environment,
       providers
@@ -164,6 +162,40 @@ function isProviders(value: unknown): value is PocDeviceConfig["providers"] {
   });
 }
 
+/**
+ * Validates the `avatar.pose` block appliance-side (the client is never
+ * trusted). Missing/empty pose = contract defaults; a non-finite or
+ * non-numeric field is dropped with a `pose.<field> ignored` warning while the
+ * other fields still apply; `zoom`/`depth` are clamped to the contract bounds.
+ */
+export function parseAvatarPose(value: unknown): { pose: AvatarPoseConfig; warnings: string[] } {
+  const pose: AvatarPoseConfig = { ...DEFAULT_AVATAR_POSE };
+  const warnings: string[] = [];
+  if (typeof value !== "object" || value === null) return { pose, warnings };
+
+  const source = value as Record<string, unknown>;
+  const readFinite = (field: keyof AvatarPoseConfig): number | undefined => {
+    const raw = source[field];
+    if (raw === undefined) return undefined;
+    if (typeof raw !== "number" || !Number.isFinite(raw)) {
+      warnings.push(`pose.${field} ignored`);
+      return undefined;
+    }
+    return raw;
+  };
+
+  const avatarYaw = readFinite("avatarYaw");
+  if (avatarYaw !== undefined) pose.avatarYaw = avatarYaw;
+  const alcoveYaw = readFinite("alcoveYaw");
+  if (alcoveYaw !== undefined) pose.alcoveYaw = alcoveYaw;
+  const zoom = readFinite("zoom");
+  if (zoom !== undefined) pose.zoom = clampZoom(zoom);
+  const depth = readFinite("depth");
+  if (depth !== undefined) pose.depth = clampDepth(depth);
+
+  return { pose, warnings };
+}
+
 function parseModelRef(value: unknown): PocModelRef | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
@@ -175,13 +207,13 @@ function parseModelRef(value: unknown): PocModelRef | null {
 /** Safe summary of a validated payload: field names and IDs only, no values. */
 export function describeConfigSummary(config: {
   character: { name: string; pronouns: string };
-  avatar: { mood?: string; modelRef?: { id: string; fileName: string } | null; pose?: Record<string, number> | null };
+  avatar: { mood?: string; modelRef?: { id: string; fileName: string } | null; pose?: AvatarPoseConfig | null };
   providers: { llm: { provider: string }; tts: { provider: string }; stt: { provider: string } };
 }): string {
   const slots = ["llm", "tts", "stt"] as const;
   return `character.name set=${config.character.name.length > 0} pronouns=${config.character.pronouns} ` +
     `mood=${config.avatar.mood !== undefined ? "present" : "absent"} ` +
     `modelRef=${config.avatar.modelRef ? config.avatar.modelRef.fileName : "none"} ` +
-    `pose.keys=${config.avatar.pose ? Object.keys(config.avatar.pose).join("+") || "0" : "none"} ` +
+    `pose=${config.avatar.pose ? "present" : "none"} ` +
     `providers=${slots.map((slot) => `${slot}:${config.providers[slot].provider}`).join(" ")}`;
 }

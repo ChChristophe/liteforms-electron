@@ -224,6 +224,12 @@ existants :
 | `avatar.mood` | warning tant que le port mood n'est pas integre |
 | `avatar.pose` | warning tant que les ports pose ne sont pas integres |
 
+> **Mise a jour 17/09/2026** : `avatar.mood` (commit `e402db0`) et `avatar.pose`
+> (implemente, validation terrain a faire) sont desormais **appliques a chaud**
+> dans la fenetre principale et `/hologram` — les deux lignes ci-dessus
+> decrivent l'etat du POC. Sémantique de la pose :
+> `protocol/DEVICE_API.md` §Bloc `avatar.pose`.
+
 Le `ChatPanel` doit etre remonte par `chatPanelKey` apres modification des
 providers, comme le fait deja `app/page.tsx` pour la configuration initiale.
 Les valeurs sensibles ne doivent jamais etre recopiees dans le payload POC ni
@@ -623,7 +629,10 @@ et le log diagnostique `%APPDATA%\liteforms-web\liteforms-diagnostic.log` :
 * provisioning WiFi (`/api/provisioning/*`) — reste hors perimetre ;
 * detection automatique du token OpenClaw local (§7.1) ;
 * catalogue VRM en ligne alimentant `vrm-library/` ;
-* ports mood/pose (warnings actuels) ;
+* ~~ports mood/pose (warnings actuels)~~ **FAIT (17/09/2026)** : mood appliqué
+  (`e402db0`), pose implémentée (`lib/avatar/avatarPose.ts` +
+  `lib/storage/poseConfig.ts` + prop `AvatarScene` + hook `onPose`, `/hologram`
+  via storage-event) — validation terrain à faire ;
 * remplacement eventuel du polling par IPC.
 
 ### 13.6 Architecture de stockage retenue (12/09/2026, decision produit)

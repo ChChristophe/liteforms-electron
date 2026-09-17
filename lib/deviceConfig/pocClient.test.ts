@@ -10,6 +10,8 @@ import {
 import { loadCharacterConfig } from "@/lib/storage/characterConfig";
 import { loadSessionConfig } from "@/lib/storage/sessionConfig";
 import { loadMoodConfig } from "@/lib/storage/moodConfig";
+import { loadPoseConfig } from "@/lib/storage/poseConfig";
+import type { AvatarPoseConfig } from "@/lib/avatar/avatarPose";
 import type { StoredVrm, VrmRepository } from "@/lib/storage/vrmRepository";
 
 const LEGACY_DEVICE_CONFIG_KEY = "liteforms.poc.deviceConfig";
@@ -20,7 +22,7 @@ const validPayload = {
   avatar: {
     mood: "happy",
     modelRef: { id: "lobsterEdit", fileName: "lobsterEdit.vrm", hash: null },
-    pose: { avatarYaw: 0, zoom: 1 }
+    pose: { avatarYaw: 0, alcoveYaw: 0, zoom: 1, depth: 0 }
   },
   environment: { alcoveColor: "#4a90d9" },
   providers: {
@@ -49,11 +51,13 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
   sessions: object[];
   models: StoredVrm[];
   moods: (string | null)[];
+  poses: AvatarPoseConfig[];
 } {
   const characters: object[] = [];
   const sessions: object[] = [];
   const models: StoredVrm[] = [];
   const moods: (string | null)[] = [];
+  const poses: AvatarPoseConfig[] = [];
   const vrm: StoredVrm = { arrayBuffer: new ArrayBuffer(1), fileName: "lobsterEdit.vrm" };
   const repo: VrmRepository = {
     load: () => Promise.resolve(vrm),
@@ -65,12 +69,14 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
     sessions,
     models,
     moods,
+    poses,
     hooks: {
       setCharacter: (c) => characters.push(c),
       onSessionConfig: (s) => sessions.push(s),
       onVrmModel: (v) => models.push(v),
       getVrmRepository: () => repo,
       onMoodPreset: (m) => moods.push(m),
+      onPose: (p) => poses.push(p),
       ...overrides
     }
   };
@@ -140,6 +146,28 @@ describe("POC renderer apply (Phase B §12.2)", () => {
     expect(cleared.applied).toContain("mood");
     expect(moods).toEqual(["happy", null]);
     expect(loadMoodConfig()).toEqual({ version: 1, mood: null });
+  });
+
+  it("calls the pose hook and writes the poseConfig store (defaults filled)", async () => {
+    const { hooks, poses } = createHooks();
+
+    const result = await applyPocDeviceConfig({ ...validPayload, receivedAt: "r-pose" }, hooks);
+
+    expect(result.applied).toContain("pose");
+    expect(result.warnings).not.toContainEqual(expect.stringMatching(/pose.*not applied/i));
+    expect(poses).toEqual([{ avatarYaw: 0, alcoveYaw: 0, zoom: 1, depth: 0 }]);
+    expect(loadPoseConfig()).toEqual({ version: 1, pose: { avatarYaw: 0, alcoveYaw: 0, zoom: 1, depth: 0 } });
+
+    const changed = await applyPocDeviceConfig(
+      {
+        ...validPayload,
+        receivedAt: "r-pose2",
+        avatar: { ...validPayload.avatar, pose: { avatarYaw: 0.5, alcoveYaw: -0.3, zoom: 2, depth: 0.1 } }
+      },
+      hooks
+    );
+    expect(changed.applied).toContain("pose");
+    expect(loadPoseConfig()?.pose).toEqual({ avatarYaw: 0.5, alcoveYaw: -0.3, zoom: 2, depth: 0.1 });
   });
 
   it("deduplicates by receivedAt: an already-stored payload is not re-applied", async () => {

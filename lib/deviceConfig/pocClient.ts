@@ -5,7 +5,9 @@ import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import { saveCharacterConfig } from "@/lib/storage/characterConfig";
 import { saveEnvironmentConfig } from "@/lib/storage/environmentConfig";
 import { saveMoodConfig } from "@/lib/storage/moodConfig";
+import { savePoseConfig } from "@/lib/storage/poseConfig";
 import { loadSessionConfig, saveSessionConfig, type SessionConfig } from "@/lib/storage/sessionConfig";
+import type { AvatarPoseConfig } from "@/lib/avatar/avatarPose";
 
 export type PocSessionConfig = Omit<SessionConfig, "version">;
 import type { BaseProviderConfig, LlmProviderId } from "@/lib/llm";
@@ -41,6 +43,8 @@ export type PocApplyHooks = {
   onVrmModel(stored: StoredVrm): void;
   /** Live mood preset hook (null resets to the neutral face). */
   onMoodPreset(preset: string | null): void;
+  /** Live presentation pose hook (yaw/alcoveYaw/zoom/depth). */
+  onPose(pose: AvatarPoseConfig): void;
 };
 
 export type PocApplyResult = { applied: string[]; warnings: string[] };
@@ -204,6 +208,14 @@ export async function applyPocDeviceConfig(
   saveMoodConfig({ mood });
   applied.push("mood");
 
+  // avatar.pose -> live pose hook + poseConfig store; the localStorage write
+  // relays the change to /hologram via the same-origin storage event. The
+  // validator already resolved missing/invalid fields to neutral defaults.
+  const pose = config.avatar.pose;
+  hooks.onPose(pose);
+  savePoseConfig(pose);
+  applied.push("pose");
+
   // providers -> mapped session stores; the caller remounts the ChatPanel.
   const mapped = mapPocProvidersToEndpoints(config.providers);
   warnings.push(...mapped.warnings);
@@ -244,8 +256,6 @@ export async function applyPocDeviceConfig(
       }
     }
   }
-
-  // pose is deliberately not applied (server warnings already list it).
 
   return { applied, warnings };
 }

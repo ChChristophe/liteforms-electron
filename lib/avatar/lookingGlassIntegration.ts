@@ -1,4 +1,5 @@
 import { Box3, Object3D, Vector3 } from "three";
+import { clampZoom } from "./avatarPose";
 
 /** The Looking Glass Portrait device has a 9:16 (portrait) aspect ratio. */
 export const LKG_INLINE_ASPECT = 9 / 16;
@@ -81,6 +82,22 @@ export function computeLookingGlassFocalPoint(object: Object3D): LookingGlassFoc
     trackballY: 0,
     fovy: 2 * Math.atan(1 / 6),
   };
+}
+
+/**
+ * Applies a presentation zoom to the Looking Glass focal point.
+ *
+ * Unlike the preview PerspectiveCamera (fixed fov, so moving the camera works),
+ * the polyfill derives the camera-array distance from targetDiam and fovy:
+ * `orbitDistance = 0.5 * targetDiam / tan(0.5 * fovy)`, and the on-screen
+ * subject size is proportional to `1 / targetDiam` — the camera distance
+ * cancels out. Zoom must therefore act on targetDiam, not on the camera.
+ */
+export function withLookingGlassZoom(
+  focalPoint: LookingGlassFocalPoint,
+  zoom: number
+): LookingGlassFocalPoint {
+  return { ...focalPoint, targetDiam: focalPoint.targetDiam / clampZoom(zoom) };
 }
 
 export function withLookingGlassTarget(

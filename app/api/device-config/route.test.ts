@@ -43,10 +43,13 @@ describe("POST /api/device-config (contract v1)", () => {
     expect(json.configVersion).toBe("1.0");
     expect(typeof json.appliedAt).toBe("string");
     expect(json.warnings).toEqual(expect.arrayContaining([
-      "pose.depth ignored (not a number)"
+      "pose.depth ignored"
     ]));
     expect(json.warnings).not.toContainEqual(
       "avatar.mood accepted but not applied in this POC (mood port pending)"
+    );
+    expect(json.warnings).not.toContainEqual(
+      "avatar.pose accepted but not applied in this POC (pose port pending)"
     );
     // Dev fallback (no LITEFORMS_DEVICE_CONFIG_DIR): GET re-delivers it.
     const stored = await (await get()).json();
