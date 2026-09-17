@@ -630,7 +630,7 @@ recovery : bouton physique §6.7.
   1. **bridge.js** (websocket localhost) — l'app Electrons embarque déjà `@lookingglass/bridge` → **0 ligne à écrire**, à valider sur Linux (§6.10) ;
   2. **Bridge-Python-SDK** (`pip install bridge-python-sdk`) — wheels manylinux x86-64/arm64, **driver Bridge embarqué** (exemples `RotatingCube`, `SolarSystem`, `DisplayQuilt`, `DisplayRGBD`) ;
   3. **HLD** (compositor logiciel, déjà dans le code) — fallback pur.
-- **Restent à valider** (semaine/week-end Phase 1) : distro Ubuntu éligible, énumération DRM du LKG en USB-C (DP alt mode), bascule du probe natif vers le websocket.
+- **Validé terrain 17/09/2026** : Ubuntu 24.04 X11 éligible, LKG Go énuméré en affichage DRM (USB-C/DP alt mode) ; **bascule websocket abandonnée** — le probe natif in-process fournit la calibration (`PLAN_LINUX_BRIDGE.md` §7).
 
 ### 6.2 Privilèges Wi-Fi / NetworkManager
 - `nmcli` (hotspot, rejoindre un réseau) = **root**.
@@ -723,7 +723,7 @@ recovery : bouton physique §6.7.
 - [ ] À chaque groupe : tests + lint + tsc + build.
 
 **Appliance / POC config**
-- [ ] **Prioritaire** : week-end Phase 1 — Bridge 2.6.3 sur Ubuntu 24.04 X11, bascule du probe natif → websocket JS, énumération DRM du LKG Go en USB-C, build AppImage/.deb sur Linux.
+- [x] ~~**Prioritaire** : week-end Phase 1 — Bridge 2.6.3 sur Ubuntu 24.04 X11, bascule du probe natif → websocket JS, énumération DRM du LKG Go en USB-C, build AppImage/.deb sur Linux.~~ **FAIT + validé terrain 17/09/2026** : LKG Go énuméré (DRM : 720x1280 logique / 1440x2560 physique), probe natif OK in-process (daemon Bridge **non requis**, bascule websocket **abandonnée**), AppImage OK (pas de `.deb` par conception). Preuves : `PLAN_LINUX_BRIDGE.md` §7.
 
 **Contrat mobile v1 (app mobile prête, §4.4, ordre du contrat)**
 - [x] Hotspot temporaire `Liteforms-Setup-XXXX` + service provisioning sur `192.168.4.1:8080` (port = paramètre de config Electron, défaut 8080, annoncé dans `provisioning/health` — §4.3). **FAIT (13/09/2026)** : `electron/wifi/` — hotspot WinRT Windows validé terrain (gateway `192.168.137.1`), Linux nmcli implémenté (helper privilégié §6.2 restant à valider terrain), fallback LAN-direct automatique.
@@ -806,3 +806,14 @@ mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4
   revu par le Mobile) — au prochain cycle Windows ; degrade si fs.watch indisponible
   (purge effective, provisioning au prochain redemarrage manuel).
 * **Bug 13/09 (post-provisioning, fix le jour meme)** : le bind LAN `0.0.0.0` du serveur Next etait "opt-in" POC (`LITEFORMS_SERVER_HOST`) → en mode normal l'appliance n'ecoutait que `127.0.0.1` → le scan de decouverte Mobile ne trouvait JAMAIS l'appliance, flux "zero IP" mort. Fix : bind `0.0.0.0` par defaut en mode normal, loopback en provisioning, override explicite prioritaire. **Lecon : un invariant POC "opt-in" peut devenir un bug produit — chaque defaut de POC doit etre reevalue au moment de la promotion (la difference n'est pas technique, elle est usage).**
+
+---
+
+## 11. Post-mortem Looking Glass Linux (17/09/2026)
+
+* **Fait/validé terrain** : le LKG Go affiche enfin l'hologramme sur l'appliance Ubuntu 24.04 **X11** (commit `Jarvis: fix native Bridge probe on Linux and validate LKG hologram`). Preuves : `nativeBridge probe :: available=true display="Looking Glass Go" serial="LKG-E13328" 1440x2560 pos=3840,0 quilt=11x6` → `native calibration applied serial=LKG-E13328 1440x2560` → `AvatarScene model framed hologram=true` (détail : `PLAN_LINUX_BRIDGE.md` §7).
+* **Incident + fix root-cause** : `libbridge_inproc.so` importe les symboles `app_indicator_*` **sans `DT_NEEDED`** appindicator → `dlopen(RTLD_NOW|RTLD_LOCAL)` échouait sur `undefined symbol: app_indicator_set_icon_theme_path`. Fix : préchargement `RTLD_GLOBAL` (chaîne mbedTLS du bundle puis `libayatana-appindicator3.so.1`) avant le `dlopen`, parité avec le SDK Python upstream ; dépendance système `libayatana-appindicator3-1` documentée (non bundle-able, licence).
+* **Fiabilité du probe** : un `dlopen` à froid d'une AppImage `compression:"maximum"` (96 Mo) prend 4-7 s → timeout 7 s donnait des faux négatifs et empilait des probes. Fix : timeout 30 s + single-flight + SIGTERM→SIGKILL (2 s).
+* **Décisions durables** : le daemon Looking Glass Bridge **n'est pas nécessaire** (le polyfill rend le quilt côté client, le probe natif fournit la calibration) → bascule « probe natif → websocket JS » **abandonnée** ; `lsusb` ne montre pas le LKG Go mais le SDK le détecte (aucune règle udev requise) ; le probe renvoie des pixels **physiques** (1440x2560) vs Electron en **logique** (720x1280, dpr=2) — écart normal, ne pas « corriger ».
+* **Leçons** : (1) un `undefined symbol` en `RTLD_NOW` se règle par préchargement global, pas en changeant de transport ; (2) ne jamais caler un timeout sur le chemin lent d'un binaire — le mesurer ; (3) le bruit de log du polyfill WebXR (`Can't change size while VR device is presenting`, `uniform1fv: no array`, `assign baselayer twice?`) est pré-existant et non bloquant — ne pas partir en chasse sans symptôme visible.
+* **Reste** : rien de bloquant. Points ouverts assumés en `PLAN_LINUX_BRIDGE.md` §7.4 (or cleanup du SIGKILL différé si observé, cadence du poll renderer = décision produit).

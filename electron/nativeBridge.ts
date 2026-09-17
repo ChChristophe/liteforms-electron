@@ -50,11 +50,17 @@ type NativeBridgeService = {
 
 type NativeBridgeLogger = (line: string) => void;
 
-const probeTimeoutMs = 7000;
+// The bridge runtime ships inside an AppImage built with compression: "maximum"
+// (squashfs), so a cold dlopen of libbridge_inproc.so and its bundled
+// ffmpeg/GTK dependency graph takes several seconds on mini-PC hardware. 7s was
+// hit exactly at the boundary and produced false negatives; allow for a slow
+// first load.
+const probeTimeoutMs = 30000;
 const cacheTtlMs = 2500;
 const nativeBridgeProbeResultFd = 3;
 const nativeBridgeProbeResultFdEnv = "LITEFORMS_NATIVE_BRIDGE_RESULT_FD";
 const maxStderrExcerptLength = 300;
+const probeSigkillDelayMs = 2000;
 
 function singleLine(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
@@ -83,6 +89,40 @@ function summarizeNativeBridgeState(state: NativeBridgeState): string {
   );
 }
 
+/**
+ * Collapses concurrent calls onto one in-flight promise: while `run` is pending
+ * every caller receives the same promise, and the slot is cleared once it
+ * settles (success, rejection or timeout) so the next call starts fresh.
+ */
+export function createSingleFlight<T>(run: () => Promise<T>): () => Promise<T> {
+  let inFlight: Promise<T> | undefined;
+  return () => {
+    if (!inFlight) {
+      inFlight = run().finally(() => {
+        inFlight = undefined;
+      });
+    }
+    return inFlight;
+  };
+}
+
+/**
+ * A probe blocked inside a native dlopen has no working event loop and may never
+ * honour SIGTERM, so escalate to SIGKILL after a short grace period. The
+ * follow-up timer is unref'd so it cannot keep the host process alive.
+ */
+function killProbe(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  child.kill("SIGTERM");
+  const escalation = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+  }, probeSigkillDelayMs);
+  escalation.unref();
+}
+
 export function createNativeBridgeService(log?: NativeBridgeLogger): NativeBridgeService {
   let activeProbe: ChildProcess | undefined;
   let cachedState: { state: NativeBridgeState; createdAt: number } | undefined;
@@ -101,7 +141,10 @@ export function createNativeBridgeService(log?: NativeBridgeLogger): NativeBridg
       return cachedState.state;
     }
 
-    const state = await probeNativeBridge();
+    // Single-flight: overlapping calls (page.tsx polls every 1500ms while the
+    // cache TTL is 2500ms) must await the same probe instead of spawning
+    // multiple 96MB children.
+    const state = await probeOnce();
     cachedState = { state, createdAt: Date.now() };
     logState(state);
     return state;
@@ -197,7 +240,7 @@ export function createNativeBridgeService(log?: NativeBridgeLogger): NativeBridg
         if (settled) return;
         settled = true;
         activeProbe = undefined;
-        child.kill();
+        killProbe(child);
         log?.(`nativeBridge probe timed out after ${probeTimeoutMs}ms`);
         resolve({
           available: false,
@@ -267,12 +310,14 @@ export function createNativeBridgeService(log?: NativeBridgeLogger): NativeBridg
     });
   };
 
+  const probeOnce = createSingleFlight<NativeBridgeState>(probeNativeBridge);
+
   return {
     getDriverStatus,
     getState,
     dispose() {
-      if (activeProbe && !activeProbe.killed) {
-        activeProbe.kill();
+      if (activeProbe) {
+        killProbe(activeProbe);
       }
       activeProbe = undefined;
     }

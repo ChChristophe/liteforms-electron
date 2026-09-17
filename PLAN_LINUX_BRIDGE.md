@@ -1,15 +1,18 @@
-# Linux Looking Glass — état en cours (non commité)
+# Linux Looking Glass — état en cours
 
-> Dernière mise à jour : 09/09/2026.
-> **Le diff décrit ici est volontairement NON COMMITÉ** : il vit dans le working tree
-> (`git status`) en attendant la validation matérielle sur l'appliance Linux.
-> Ne pas merger ni publier avant d'avoir exécuté le cycle « Appliance » ci-dessous.
+> Dernière mise à jour : 17/09/2026 (soir).
+> **✅ OBJECTIF ATTEINT** : le terrain du 17/09 confirme que **le LKG affiche
+> l'hologramme**. Le diff décrit ci-dessous (12 fichiers, §2) plus le correctif du
+> probe natif du 16/09 (§5) ont été **commités ensemble** dans le commit
+> `Jarvis: fix native Bridge probe on Linux and validate LKG hologram` après
+> validation terrain (voir §7 pour les preuves de log). Phase Linux Looking Glass
+> **close** côté affichage ; reste listé en §7.4.
 
 ## 1. Contexte
 
 L'app démarre sur l'appliance Linux (Ubuntu 24.04, X11) mais l'avatar ne s'affiche
-jamais sur le Looking Glass. Le diagnostic initial (`liteforms-diagnostic.log` du
-09/09) a montré que :
+jamais sur le Looking Glass (**résolu le 17/09 — voir §7**). Le diagnostic initial
+(`liteforms-diagnostic.log` du 09/09) a montré que :
 
 - le **probe natif** (`libbridge_inproc.so`) échoue **silencieusement** — le
   renderer avalait l'erreur, rien n'était logué ;
@@ -33,10 +36,11 @@ Faits vérifiés localement (machine Windows) :
 - le probe child n'héritait pas de `DISPLAY`/`XAUTHORITY` (filtre d'env), alors
   que la lib lie GTK3/SDL/X11 → blocage Linux probable au `initialize_bridge`.
 
-## 2. Contenu du diff en attente (12 fichiers)
+## 2. Diff de diagnostic (commité en `5ea878f`, validé terrain 17/09)
 
 Tout est diagnostique, sauf deux changements de comportement volontaires.
-Vérifié : 684 tests OK, lint 0 erreur, `tsc --noEmit` OK, `npm run build:electron` OK.
+Vérifié à l'époque : 684 tests OK, lint 0 erreur, `tsc --noEmit` OK,
+`npm run build:electron` OK (848 tests verts au moment de la validation terrain).
 
 | Fichier | Changement | Type |
 |---|---|---|
@@ -57,11 +61,11 @@ re-désactivé (état d'origine restauré).
 
 ## 3. Cycle « Appliance » à exécuter (dans cet ordre)
 
-> **⚠️ BLOQUÉ — À REPRENDRE PLUS TARD** (10/09/2026) : la machine Linux est
-> actuellement en panne/unstable, le cycle complet ci-dessous n'a **pas** pu être
-> exécuté. Point important sur lequel revenir dès que l'appliance est de retour :
-> exécuter les étapes 1→4 dans l'ordre, et tant que ce cycle n'est pas passé,
-> **le diff reste volontairement non commité** (cf. §5).
+> **✔️ EXÉCUTÉ le 17/09/2026** — le cycle a été mené à son terme sur l'appliance
+> (AppImage reconstruite) et l'hologramme s'affiche. Les étapes 1→4 ci-dessous sont
+> conservées comme procédure de re-test : le diff de diagnostic a été commité
+> (`5ea878f`), la cause racine du probe natif identifiée le 16/09 (§5) puis
+> corrigée et validée terrain (§7).
 
 1. **Sans rebuild** — vérifier les libs manquantes sur l'appliance :
 
@@ -106,9 +110,57 @@ sur le bon display — vérifiable via `[windowOpen →] override=yes` + `did-na
 display="…"`, DOM via `holo-dom :: …`). Ne pas toucher au chemin d'affichage tant
 que le probe n'est pas vert : le code actuel est conçu pour ça.
 
-## 5. Rappels
+## 5. Terrain 16/09/2026 — probe natif Linux : cause racine et correctif
 
-- **Ne pas commiter ce diff avant la validation matérielle** (décision utilisateur).
+Run terrain Ubuntu 22.04 (AppImage). Le LKG (`LKG-E13328`) est bien énuméré par
+Electron (`[displays] … 720x1280`), mais le probe natif échoue :
+
+```
+nativeBridge probe :: available=false error="Failed to load shared library:
+undefined symbol: app_indicator_set_icon_theme_path"
+```
+
+- **Cause racine** : `libbridge_inproc.so` importe `app_indicator_new`,
+  `app_indicator_set_icon`, `app_indicator_set_icon_theme_path`,
+  `app_indicator_set_menu`, `app_indicator_set_status` **sans `DT_NEEDED`**
+  appindicator (vérifié dans le binaire : seuls les noms de symboles et le chemin
+  d'include `/usr/include/libayatana-appindicator3-0.1/…` apparaissent). koffi
+  charge avec `RTLD_NOW | RTLD_LOCAL` → échec immédiat sur symbole non résolu.
+- **Piste écartée** : mbedTLS (`libmbedcrypto.so.1`, `libmbedx509.so.0`,
+  `libmbedtls.so.10`) est **bundle** dans `native/bridge/linux-x64/` — pas une
+  cause.
+- **Correctif** (`electron/nativeBridgeProbe.ts`, Linux uniquement) : avant
+  `koffi.load(libraryPath)`, précharger la chaîne mbedTLS présente dans le runtime
+  puis les candidats appindicator (`libappindicator3.so.1`, `libappindicator3.so`,
+  `libappindicator.so.1`, `libappindicator.so`,
+  `libayatana-appindicator3.so.1`, `libayatana-appindicator3.so`) avec
+  `{ global: true }`, premier candidat chargeable gagnant. Même contournement que
+  le SDK Python upstream (`BridgeApi.py`, « Linux: preload hard dependencies »).
+  Si aucun candidat ne charge, l'erreur « undefined symbol » d'origine reste
+  remontée (pas d'échec silencieux).
+- **Dépendance runtime** : paquet système `libayatana-appindicator3-1`
+  (Ubuntu 22.04/24.04), non bundle-able (licence upstream) ; doc dans
+  `native/bridge/README.md`.
+- **Validation** : plan de préchargement couvert par des tests unitaires (Windows
+  CI → plan vide). **Validé terrain le 17/09/2026** sur Ubuntu 24.04 X11 : le
+  `dlopen` réel passe, le probe renvoie
+  `available=true display="Looking Glass Go" serial="LKG-E13328" 1440x2560
+  pos=3840,0 quilt=11x6` (voir §7). L'erreur `undefined symbol` a disparu.
+
+Suite du terrain : un dlopen à froid du `libbridge_inproc.so` (96 Mo, AppImage
+`compression: "maximum"`) prend 4-7 s sur le mini-PC ; le timeout de 7 s était
+atteint à la limite et produisait des faux négatifs, pendant que des probes
+s'empilaient. Correctifs :
+
+- `probeTimeoutMs` 7000 → **30000** (`electron/nativeBridge.ts`).
+- Single-flight du probe (`createSingleFlight`) : des `getState()` concurrents
+  attendent la même promesse au lieu de lancer plusieurs enfants de 96 Mo.
+- À l'expiration : SIGTERM puis SIGKILL après 2 s si l'enfant n'est pas sorti
+  (un process bloqué dans `dlopen` n'obéit pas toujours à SIGTERM) ; même chemin
+  dans `dispose()`.
+
+## 6. Rappels
+
 - Le seul changement sémantique à re-soumettre en revue : le relax
   « serial OU dimensions » dans `isNativeLookingGlassBridgeDisplayConnected`.
 - Le test Windows packagé peut être reproduit à tout moment :
@@ -122,3 +174,76 @@ que le probe n'est pas vert : le code actuel est conçu pour ça.
   MToon/VRM cassés). Ne pas chercher à « réparer » via le code Electron ;
   voie alternative mobile : WebView (WebGL Chromium complet). Le plan Directeur
   avait déjà flag ce risque (« tester vite MToon/WebGL2 ; sinon snapshot live »).
+
+## 7. Terrain 17/09/2026 — objectif atteint (le LKG affiche l'hologramme)
+
+Cycle §3 exécuté par le propriétaire du mini-PC sur AppImage reconstruite.
+**L'hologramme s'affiche** : le diff du §2 + le correctif §5 ont été commités
+après cette validation (un seul commit, cf. `git log`).
+
+### 7.1 Checklist — résultats
+
+| Étape | Attendu | Résultat |
+|---|---|---|
+| `echo $XDG_SESSION_TYPE` | `x11` | **`x11`** ✓ (Wayland hors sujet) |
+| `dpkg -l \| grep -iE 'appindicator\|ayatana'` | `libayatana-appindicator3-1` installé | **`libayatana-appindicator3-1 0.5.93-1build3`** ✓ (+ `-dev`, `gir1.2-…`, extension GNOME) |
+| `lsusb` | LKG visible | **absent de `lsusb`** — **sans effet** : la détection passe par le SDK natif (HID/DRM), aucune règle udev n'a été nécessaire |
+| probe natif (log) | `available=true` | **`nativeBridge probe :: available=true display="Looking Glass Go" serial="LKG-E13328" 1440x2560 pos=3840,0 quilt=11x6`** ✓ |
+| calibration | `native calibration applied` | **`native calibration applied serial=LKG-E13328 1440x2560`** ✓ |
+| fenêtre holo | `/hologram` sur le LKG, canvas natif | **`VRButton click … pathname=/hologram container=720x1280 canvas=1440x2560`** + `AvatarScene model framed hologram=true scale=0.895` ✓ |
+
+Détail utile pour la suite : le probe renvoie des **pixels physiques**
+(`1440x2560 pos=3840,0`) là où Electron énumère le LKG en **logique**
+(`[displays] … 720x1280 pos=1920,0`, `dpr=2`). Cohérent (×2), la calibration est
+appliquée en 1440x2560 — ne pas « corriger » cet écart.
+
+**Rappel cause racine** : `hologramAutoOpen.ts:25` exige des **bounds d'écran** ;
+seul le probe natif en fournit (`bridge-js` renvoie `connected` avec `display=-`).
+Probe cassé (`undefined symbol: app_indicator_set_icon_theme_path`, §5) ⇒ décision
+`"none"` ⇒ jamais de fenêtre `/hologram`, alors que le LKG était bien énuméré.
+Le préchargement `RTLD_GLOBAL` appindicator + mbedTLS a débloqué toute la chaîne.
+
+### 7.2 Procédure de re-test (sans rebuild) — conservée pour la suite
+
+Depuis un terminal de la session graphique (DISPLAY requis), AppImage extraite :
+
+```bash
+./liteforms-0.0.1.AppImage --appimage-extract > /dev/null
+cd squashfs-root
+LD_LIBRARY_PATH="$PWD/resources/bridge/linux-x64" \
+ELECTRON_RUN_AS_NODE=1 \
+LITEFORMS_NATIVE_BRIDGE_LIBRARY="$PWD/resources/bridge/linux-x64/libbridge_inproc.so" \
+LITEFORMS_NATIVE_BRIDGE_RUNTIME_DIR="$PWD/resources/bridge/linux-x64" \
+./liteforms-web resources/app.asar/dist-electron/nativeBridgeProbe.js
+```
+
+Arbre de lecture : `{"available":true,…}` → OK ; `"No Looking Glass displays were
+reported"` → USB/DRM, pas appindicator ; `undefined symbol: app_indicator_…` →
+paquet/préchargement (vérifier `dpkg -l`) ; `libmbedtls.so.10` introuvable →
+`LD_LIBRARY_PATH` non pris. ⚠️ `LD_LIBRARY_PATH` reste obligatoire en manuel (la
+résolution du RUNPATH n'est pas transitive ; l'app le règle elle-même dans
+`createNativeBridgeProbeEnv`).
+
+### 7.3 Bruit de log restant après succès (non bloquant, non régressif)
+
+Présent sur le chemin polyfill WebXR, constatable aussi hors Linux :
+`Unable to find VRButton`, `optional feature 'bounded-floor'/'layers' is not
+supported`, `THREE.WebGLRenderer: Can't change size while VR device is
+presenting`, `WebGL: INVALID_VALUE: uniform1fv: no array`, `attempted to assign
+baselayer twice?`, `THREE.Clock/PCFSoftShadowMap deprecated`. Aucun n'empêche
+l'affichage. **Ne pas partir en chasse** sans symptôme visible côté LKG.
+
+### 7.4 Points ouverts / limites assumées
+
+- Le daemon **Looking Glass Bridge n'est pas nécessaire** à notre chemin : le
+  polyfill rend le quilt côté client et le probe natif fournit la calibration.
+  La bascule « probe natif → websocket JS » prévue au plan Directeur est
+  **abandonnée** pour l'appliance : le probe natif fonctionne.
+- Limite connue : si un probe expire **et** que l'app quitte dans les 2 s, le
+  SIGKILL différé (`unref`) peut ne pas partir → process orphelin possible.
+  Vérifier avec `ps` si suspicion ; correctif volatil seulement si observé.
+- Le poll renderer reste à 1500 ms (`app/page.tsx:26`) avec un cache de 2500 ms →
+  un probe toutes les ~3 s même quand tout marche ; si l'appliance est chargée à
+  tort, discuter d'espacer le poll (décision produit, non tranchée).
+- **Règle commit (respectée)** : un seul commit pour le feature complet validé
+  terrain, jamais de fix-commit intermédiaire.

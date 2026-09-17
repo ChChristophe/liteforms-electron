@@ -1,5 +1,6 @@
 import koffi from "koffi";
-import { writeSync } from "node:fs";
+import { existsSync, writeSync } from "node:fs";
+import { join } from "node:path";
 
 type Value = {
   value: number;
@@ -175,6 +176,65 @@ function readSubpixelCells(buffer: Buffer, cellCount: number) {
   return cells;
 }
 
+export type NativeBridgePreloadCandidate = {
+  name: string;
+  /** Absolute runtime-dir path (bundled TLS libs) vs bare soname resolved by the loader. */
+  absolute: boolean;
+};
+
+// Vendor loader parity. libbridge_inproc.so imports app_indicator_new /
+// app_indicator_set_icon / app_indicator_set_icon_theme_path /
+// app_indicator_set_menu / app_indicator_set_status but does NOT declare a
+// DT_NEEDED entry for appindicator, so loading it with koffi's default
+// RTLD_NOW|RTLD_LOCAL fails with "undefined symbol:
+// app_indicator_set_icon_theme_path" unless those symbols are already in the
+// global namespace. The upstream Bridge Python SDK (BridgeApi.py, "Linux:
+// preload hard dependencies") preloads the mbedTLS chain then appindicator with
+// RTLD_GLOBAL before dlopen-ing libbridge_inproc.so. This is not dead code:
+// removing it breaks the native probe on Linux.
+const tlsPreloadLibraries = ["libmbedcrypto.so.1", "libmbedx509.so.0", "libmbedtls.so.10"];
+// Same order as the upstream SDK; the first candidate that loads wins.
+const appindicatorPreloadCandidates = [
+  "libappindicator3.so.1",
+  "libappindicator3.so",
+  "libappindicator.so.1",
+  "libappindicator.so",
+  "libayatana-appindicator3.so.1",
+  "libayatana-appindicator3.so"
+];
+
+export function getNativeBridgePreloadPlan(options: {
+  runtimeDir: string;
+  platform?: NodeJS.Platform;
+  existsSync?: (path: string) => boolean;
+}): NativeBridgePreloadCandidate[] {
+  const platform = options.platform ?? process.platform;
+  if (platform !== "linux" || !options.runtimeDir) return [];
+
+  const fileExists = options.existsSync ?? existsSync;
+  const plan: NativeBridgePreloadCandidate[] = tlsPreloadLibraries
+    .map((name) => ({ name: join(options.runtimeDir, name), absolute: true }))
+    .filter((candidate) => fileExists(candidate.name));
+
+  for (const name of appindicatorPreloadCandidates) {
+    plan.push({ name, absolute: false });
+  }
+  return plan;
+}
+
+function preloadNativeBridgeDependencies(runtimeDir: string) {
+  for (const candidate of getNativeBridgePreloadPlan({ runtimeDir })) {
+    try {
+      koffi.load(candidate.name, { global: true });
+      if (!candidate.absolute) return; // First appindicator that loads wins.
+    } catch {
+      // Keep the real error diagnosable: if no appindicator candidate loads, the
+      // main koffi.load(libraryPath) below still fails loudly with the original
+      // "undefined symbol" message.
+    }
+  }
+}
+
 function main() {
   const libraryPath = process.env.LITEFORMS_NATIVE_BRIDGE_LIBRARY;
   const runtimeDir = process.env.LITEFORMS_NATIVE_BRIDGE_RUNTIME_DIR;
@@ -190,6 +250,10 @@ function main() {
 
   if (process.platform === "win32") {
     process.env.PATH = `${runtimeDir};${process.env.PATH ?? ""}`;
+  }
+
+  if (process.platform === "linux") {
+    preloadNativeBridgeDependencies(runtimeDir);
   }
 
   const nativeUnsignedLongType = getNativeBridgeUnsignedLongType();

@@ -19,6 +19,61 @@ vi.mock("node:fs", () => ({
   existsSync: () => true,
 }));
 
+function createProbeChild(pipe: PassThrough) {
+  const child = new EventEmitter() as EventEmitter & {
+    killed: boolean;
+    kill: ReturnType<typeof vi.fn>;
+    stderr: PassThrough;
+    stdout: PassThrough;
+    stdio: Array<PassThrough | null>;
+  };
+  child.killed = false;
+  child.kill = vi.fn();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.stdio = [null, child.stdout, child.stderr, pipe];
+  return child;
+}
+
+describe("createSingleFlight", () => {
+  it("returns the same in-flight promise to concurrent callers, then clears the slot", async () => {
+    const { createSingleFlight } = await import("./nativeBridge");
+    const deferred: { resolve: (value: string) => void } = { resolve: () => {} };
+    let call = 0;
+    const run = vi.fn(() => {
+      call += 1;
+      if (call === 1) {
+        return new Promise<string>((resolve) => {
+          deferred.resolve = resolve;
+        });
+      }
+      return Promise.resolve("again");
+    });
+    const singleFlight = createSingleFlight(run);
+
+    const first = singleFlight();
+    const second = singleFlight();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(second).toBe(first);
+
+    deferred.resolve("done");
+    await expect(first).resolves.toBe("done");
+
+    await expect(singleFlight()).resolves.toBe("again");
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the slot after a rejection so the next call retries", async () => {
+    const { createSingleFlight } = await import("./nativeBridge");
+    const run = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce("ok");
+    const singleFlight = createSingleFlight(run);
+
+    await expect(singleFlight()).rejects.toThrow("boom");
+    await expect(singleFlight()).resolves.toBe("ok");
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("native Bridge service", () => {
   beforeEach(() => {
     spawnMock.mockReset();
@@ -154,6 +209,36 @@ describe("native Bridge service", () => {
       expect(state.error).toContain("exited with code 0");
       expect(state.error).toContain("USB");
     }
+  });
+
+  it("single-flights concurrent getState calls into exactly one spawn", async () => {
+    const state = {
+      available: true,
+      source: "native",
+      display: { id: "0", name: "Looking Glass Go", serial: "LKG-G123", width: 2560, height: 1440 },
+      calibration: { configVersion: "1.0", serial: "LKG-G123", subpixelCells: [] },
+    };
+
+    spawnMock.mockImplementation(() => {
+      const resultPipe = new PassThrough();
+      const child = createProbeChild(resultPipe);
+
+      process.nextTick(() => {
+        resultPipe.end(JSON.stringify(state));
+        child.emit("close", 0, null);
+      });
+
+      return child;
+    });
+
+    const { createNativeBridgeService } = await import("./nativeBridge");
+    const service = createNativeBridgeService();
+
+    const [first, second] = await Promise.all([service.getState(), service.getState()]);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(first).toEqual(state);
+    expect(second).toEqual(state);
   });
 
   it("logs the probe state only when it changes", async () => {
