@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTtsAdapter, extractGoogleInlineData, splitSpeakableText, IncrementalSpeechBuffer, rewriteDecimalsForTts } from "./tts";
+import { createTtsAdapter, extractGoogleInlineData, getSafeTextForTts, splitSpeakableText, IncrementalSpeechBuffer, rewriteDecimalsForTts } from "./tts";
 import type { TtsWorkerLike } from "./types";
 
 // ── IncrementalSpeechBuffer ────────────────────────────────────────────────────
@@ -171,6 +171,34 @@ describe("rewriteDecimalsForTts", () => {
 
   it("does not rewrite a period that is not between digits", () => {
     expect(rewriteDecimalsForTts("Go to example.com today.")).toBe("Go to example.com today.");
+  });
+});
+
+// ── getSafeTextForTts ──────────────────────────────────────────────────────────
+
+describe("getSafeTextForTts", () => {
+  it("removes a complete think block before synthesis", () => {
+    expect(getSafeTextForTts("<think>private reasoning</think>Bonjour.")).toBe("Bonjour.");
+  });
+
+  it("truncates an incomplete tag at the end of the stream", () => {
+    expect(getSafeTextForTts("Bonjour<thi")).toBe("Bonjour");
+    expect(getSafeTextForTts("Bonjour<")).toBe("Bonjour");
+  });
+
+  it("truncates a trailing incomplete markdown link before synthesis", () => {
+    expect(getSafeTextForTts("Va à [Aqualand](https://www.aqual")).toBe("Va à");
+    expect(getSafeTextForTts("Info [note](https://x.fr")).toBe("Info");
+  });
+
+  it("strips completed markdown links down to their label", () => {
+    expect(getSafeTextForTts("Va à [Aqualand](https://www.aqualand.fr) demain.")).toBe(
+      "Va à Aqualand demain."
+    );
+  });
+
+  it("leaves a plain sentence unchanged", () => {
+    expect(getSafeTextForTts("Bonjour, quoi de neuf ?")).toBe("Bonjour, quoi de neuf ?");
   });
 });
 

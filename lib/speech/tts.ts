@@ -1,4 +1,5 @@
 import { normalizeTtsConfig } from "./config";
+import { sanitizeAssistantText } from "@/lib/llm/output";
 import { KokoroWorkerClient } from "./workerClient";
 import type { FetchLike } from "@/lib/llm";
 import type { TtsAdapter, TtsConfig, TtsResult, TtsWorkerLike } from "./types";
@@ -291,25 +292,29 @@ export function rewriteDecimalsForTts(text: string): string {
 
 /**
  * Returns the portion of the raw LLM output that is safe to feed to TTS.
- * - Strips completed <think>...</think> blocks.
+ * - Applies the shared assistant sanitizer (think blocks, markdown links, whitespace).
  * - Truncates at any `<` that has no matching `>` after it, preventing
  *   partial think-block tags from polluting the TTS buffer.
+ * - Truncates a trailing incomplete markdown link (`[label](https://…`) so
+ *   partially streamed URLs never reach synthesis.
  */
 export function getSafeTextForTts(raw: string): string {
-  // Strip complete think blocks, trailing whitespace runs, etc.
-  let sanitized = raw
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/<think>[\s\S]*$/gi, "")
-    .replace(/<\/think>/gi, "")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  let sanitized = sanitizeAssistantText(raw);
 
   // Truncate at any potentially incomplete XML/HTML tag to avoid
   // emitting partial <think> tokens like "<thi" to the TTS buffer.
   const ltIdx = sanitized.lastIndexOf("<");
   if (ltIdx >= 0 && sanitized.indexOf(">", ltIdx) < 0) {
     sanitized = sanitized.slice(0, ltIdx).trimEnd();
+  }
+
+  // Truncate a trailing incomplete markdown link ("[label](https://…").
+  const parenIdx = sanitized.lastIndexOf("](");
+  if (parenIdx >= 0 && sanitized.indexOf(")", parenIdx + 2) < 0) {
+    const bracketIdx = sanitized.lastIndexOf("[", parenIdx);
+    if (bracketIdx >= 0) {
+      sanitized = sanitized.slice(0, bracketIdx).trimEnd();
+    }
   }
 
   return sanitized;
