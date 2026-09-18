@@ -26,10 +26,6 @@ type Listener<K extends keyof WakeWordEventMap> = (
   payload: WakeWordEventMap[K],
 ) => void;
 
-interface QueuedFrame {
-  frame: Int16Array;
-}
-
 export class WakeWordController {
   private config: ResolvedWakeWordConfig;
   private readonly listeners: {
@@ -45,7 +41,7 @@ export class WakeWordController {
 
   private engine: OpenWakeWordEngine | null = null;
   private microphone: Microphone | null = null;
-  private queue: QueuedFrame[] = [];
+  private queue: Int16Array[] = [];
   private draining = false;
   /** When paused, incoming frames are dropped (ASR/TTS owns the airtime). */
   private paused = false;
@@ -202,7 +198,7 @@ export class WakeWordController {
   private enqueueFrame(frame: Int16Array): void {
     if (this.paused) return;
     if (this._status !== "listening" && this._status !== "detected") return;
-    this.queue.push({ frame });
+    this.queue.push(frame);
     // Bounded queue: drop oldest frames when inference falls behind realtime.
     while (this.queue.length > this.config.maxQueuedFrames) this.queue.shift();
     void this.drain();
@@ -215,7 +211,7 @@ export class WakeWordController {
       while (this.queue.length > 0) {
         const next = this.queue.shift();
         if (!next) break;
-        const scores = await this.engine.predict(next.frame);
+        const scores = await this.engine.predict(next);
         this.emit("scores", { scores });
       }
     } catch (err) {
@@ -260,5 +256,12 @@ export class WakeWordController {
     }
     this.setStatus("error");
     this.emit("error", error);
+    // A failed pipeline must not keep the microphone device open: release the
+    // capture graph (a later start() rebuilds it). The engine stays warm and
+    // the error status is preserved (stop() must not overwrite it).
+    this.queue = [];
+    const mic = this.microphone;
+    this.microphone = null;
+    if (mic) void mic.stop().catch(() => {});
   }
 }

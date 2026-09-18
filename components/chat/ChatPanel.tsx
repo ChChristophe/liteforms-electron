@@ -112,6 +112,12 @@ const DYNAMIC_MIC_PAUSE_MS = 1500;
 const DYNAMIC_MIC_SPEECH_GATE_MS = 250;
 const DYNAMIC_MIC_RMS_THRESHOLD = 0.015;
 const DYNAMIC_MIC_STREAK_HANGOVER_MS = 400;
+// Improvement over Web parity (no equivalent upstream): a wake-word triggered
+// session may never receive speech (response.done never fires on Realtime,
+// pause detection needs heard speech on ASR), so the session would hold the
+// microphone forever. This idle timeout only applies to wake-word sessions,
+// never to the manual mic flow.
+const WAKE_WORD_MIC_IDLE_TIMEOUT_MS = 8000;
 
 const localModelStorageKey = "liteforms.localModels";
 export const initialLocalModelLoadState: LocalModelLoadState[] = [
@@ -237,9 +243,16 @@ export function ChatPanel({
   const micSessionIdRef = useRef(0);
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const dynamicMicCleanupRef = useRef<(() => void) | null>(null);
+  // Wake-word only idle guard (improvement over Web parity): clears the mic
+  // when the triggered session never hears the user speak.
+  const micIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const micModeRef = useRef<MicMode>(micMode);
   const lastAudioRef = useRef<Blob | null>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
+  // Web parity (bbf7a74): tracks whether the next submit comes from the mic,
+  // so a text submit never auto-restarts the microphone in dynamic mic mode.
+  const nextSubmitInputSourceRef = useRef<"text" | "audio">("text");
   const messageListRef = useRef<HTMLDivElement>(null);
   const localGemmaWorkerRef = useRef(new LocalGemmaWorkerClient());
   const kokoroWorkerRef = useRef(new KokoroWorkerClient());
@@ -335,6 +348,8 @@ export function ChatPanel({
     void requestMicrophonePermission();
     return () => {
       cancelled = true;
+      clearMicIdleTimer();
+      clearRealtimeIdleTimer();
       cleanupDynamicMicPauseDetection();
       googleLiveSessionRef.current?.stop();
       googleLiveSessionRef.current = null;
@@ -576,6 +591,8 @@ export function ChatPanel({
     const form = event.currentTarget;
     const formData = new FormData(form);
     const content = String(formData.get("message") ?? "").trim();
+    const submitInputSource = nextSubmitInputSourceRef.current;
+    nextSubmitInputSourceRef.current = "text";
     if (!content || status === "streaming") {
       return;
     }
@@ -732,7 +749,7 @@ export function ChatPanel({
       await drainTask;
       // Wake word armed = exclusive voice mode: never auto-restart the mic,
       // only an explicit wake word may open the next session.
-      if (!drainFailed && micModeRef.current === "dynamic" && !usesRealtimeVoice && !wakeWordArmed) {
+      if (!drainFailed && submitInputSource === "audio" && micModeRef.current === "dynamic" && !usesRealtimeVoice && !wakeWordArmed) {
         await startMicRecording();
       }
     } catch (caught) {
@@ -777,6 +794,7 @@ export function ChatPanel({
     if (!isActiveRealtimeVoiceConfig(realtimeVoiceConfig)) return;
     const providerLabel = realtimeProviderLabel(realtimeVoiceConfig.provider);
     if (googleLiveSessionRef.current?.isActive()) {
+      clearRealtimeIdleTimer();
       googleLiveSessionRef.current.stop();
       googleLiveSessionRef.current = null;
       void googleLivePlaybackCtxRef.current?.close();
@@ -788,7 +806,7 @@ export function ChatPanel({
     await startRealtimeVoiceSession({ captureMicrophone: true });
   }
 
-  async function startRealtimeVoiceSession({ captureMicrophone }: { captureMicrophone: boolean }) {
+  async function startRealtimeVoiceSession({ captureMicrophone, idleTimeoutMs }: { captureMicrophone: boolean; idleTimeoutMs?: number }) {
     if (!isActiveRealtimeVoiceConfig(realtimeVoiceConfig)) return null;
     const providerLabel = realtimeProviderLabel(realtimeVoiceConfig.provider);
     const credential = realtimeVoiceConfig.credential ?? await resolveProviderCredential(realtimeVoiceConfig.provider);
@@ -868,6 +886,7 @@ export function ChatPanel({
         } as never,
         // Google sends cumulative partials — replace, don't accumulate.
         onUserTranscript: (text, final) => {
+          clearRealtimeIdleTimer();
           setTranscript(text);
           setLastAsrDebug(`${providerLabel} heard: "${text}"`);
           if (final) {
@@ -877,6 +896,7 @@ export function ChatPanel({
           }
         },
         onAssistantTranscript: (text) => {
+          clearRealtimeIdleTimer();
           setMessages((current) => {
             const next = current.slice();
             const last = next.at(-1);
@@ -889,6 +909,7 @@ export function ChatPanel({
           setLastAsrDebug(`${providerLabel} said: "${text}"`);
         },
         onAudio: (audio) => {
+          clearRealtimeIdleTimer();
           void (async () => {
             if (!(await handleRealtimeAudioForHologram?.(audio))) {
               scheduleAudioChunk(audio);
@@ -911,6 +932,7 @@ export function ChatPanel({
           }
         },
         onError: (caught) => {
+          clearRealtimeIdleTimer();
           logDiagnostic(`realtime session error provider=${providerLabel} message=${caught.message}`);
           lipSyncActive = false;
           setSpeechError(caught.message);
@@ -920,17 +942,31 @@ export function ChatPanel({
         // release it so the microphone graph stops and the UI returns to idle.
         // Without this the session stays "listening" and keeps the mic held.
         onEnd: () => {
+          clearRealtimeIdleTimer();
           googleLiveSessionRef.current?.stop();
           googleLiveSessionRef.current = null;
           setSpeechStatus("idle");
         }
       });
       googleLiveSessionRef.current = session;
+      if (captureMicrophone && idleTimeoutMs) {
+        clearRealtimeIdleTimer();
+        realtimeIdleTimerRef.current = setTimeout(() => {
+          realtimeIdleTimerRef.current = null;
+          logDiagnostic(`wake-word realtime idle timeout provider=${providerLabel} ms=${idleTimeoutMs}`);
+          googleLiveSessionRef.current?.stop();
+          googleLiveSessionRef.current = null;
+          void googleLivePlaybackCtxRef.current?.close();
+          googleLivePlaybackCtxRef.current = null;
+          setSpeechStatus("idle");
+        }, idleTimeoutMs);
+      }
       session.start(stream);
       setSpeechStatus(captureMicrophone ? "listening" : "idle");
       setLastAsrDebug(`${providerLabel}: ${captureMicrophone ? "listening" : "connected"}`);
       return session;
     } catch (caught) {
+      clearRealtimeIdleTimer();
       setSpeechError(caught instanceof Error ? caught.message : `${providerLabel} failed to start.`);
       setSpeechStatus("error");
       return null;
@@ -973,7 +1009,21 @@ export function ChatPanel({
     logDiagnostic(`timer expired label=${label} minutes=${minutes} session=${sessionPath}`);
   };
 
-  async function startMicRecording(options?: { forceSentenceAutoSubmit?: boolean }) {
+  function clearMicIdleTimer() {
+    if (micIdleTimerRef.current !== null) {
+      clearTimeout(micIdleTimerRef.current);
+      micIdleTimerRef.current = null;
+    }
+  }
+
+  function clearRealtimeIdleTimer() {
+    if (realtimeIdleTimerRef.current !== null) {
+      clearTimeout(realtimeIdleTimerRef.current);
+      realtimeIdleTimerRef.current = null;
+    }
+  }
+
+  async function startMicRecording(options?: { forceSentenceAutoSubmit?: boolean; idleTimeoutMs?: number }) {
     // Web parity (922809e): never leave a previous ASR session running.
     const previousSession = asrSessionRef.current;
     if (previousSession?.isActive()) {
@@ -991,12 +1041,15 @@ export function ChatPanel({
         worker: distilWhisperWorkerRef.current,
         onPartial: (text) => {
           if (micSessionIdRef.current !== sessionId) return;
+          // First sign of user speech: the wake-word session is not idle anymore.
+          clearMicIdleTimer();
           setLastAsrDebug(`STT: "${text}"`);
           setTranscript(text);
         },
         onTranscript: (text, event) => {
           if (micSessionIdRef.current !== sessionId) return;
           if (!event.final) return;
+          clearMicIdleTimer();
           cleanupDynamicMicPauseDetection();
           setSpeechStatus("idle");
           const trimmed = text.trim();
@@ -1007,6 +1060,7 @@ export function ChatPanel({
             if (input) {
               input.value = trimmed;
             }
+            nextSubmitInputSourceRef.current = "audio";
             composerFormRef.current?.requestSubmit();
           } else {
             setTranscript("");
@@ -1018,6 +1072,7 @@ export function ChatPanel({
         },
         onError: (caught) => {
           if (micSessionIdRef.current !== sessionId) return;
+          clearMicIdleTimer();
           cleanupDynamicMicPauseDetection();
           setSpeechError(caught.message);
           setSpeechStatus("error");
@@ -1027,6 +1082,14 @@ export function ChatPanel({
       session.start(stream);
       if (micMode === "dynamic" || options?.forceSentenceAutoSubmit === true) {
         startDynamicMicPauseDetection(stream, sessionId, options?.forceSentenceAutoSubmit === true);
+      }
+      if (options?.idleTimeoutMs) {
+        clearMicIdleTimer();
+        micIdleTimerRef.current = setTimeout(() => {
+          micIdleTimerRef.current = null;
+          logDiagnostic(`wake-word ASR idle timeout ms=${options.idleTimeoutMs}`);
+          stopMicRecording();
+        }, options.idleTimeoutMs);
       }
       setSpeechStatus("listening");
     } catch (caught) {
@@ -1051,6 +1114,7 @@ export function ChatPanel({
   }
 
   function stopMicRecording() {
+    clearMicIdleTimer();
     cleanupDynamicMicPauseDetection();
     const session = asrSessionRef.current;
     if (session?.isActive()) {
@@ -1495,10 +1559,12 @@ export function ChatPanel({
               // Web parity: a realtime voice provider owns speech in/out, so the
               // wake word opens the realtime session (mic capture) instead of
               // the separate ASR flow. Non-realtime keeps the STT auto-submit path.
+              // Improvement over Web parity: a wake-word session that never hears
+              // speech is closed by the idle timeout so the microphone is released.
               if (isActiveRealtimeVoiceConfig(realtimeVoiceConfig)) {
-                void startRealtimeVoiceSession({ captureMicrophone: true });
+                void startRealtimeVoiceSession({ captureMicrophone: true, idleTimeoutMs: WAKE_WORD_MIC_IDLE_TIMEOUT_MS });
               } else {
-                void startMicRecording(o);
+                void startMicRecording({ ...o, idleTimeoutMs: WAKE_WORD_MIC_IDLE_TIMEOUT_MS });
               }
             }}
         getMicrophoneStream={getMicrophoneStream}

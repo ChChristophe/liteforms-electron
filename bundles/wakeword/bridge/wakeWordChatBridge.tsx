@@ -29,6 +29,7 @@ import {
   WAKE_WORD_DETECTED_EVENT,
   dispatchWakeWordDetected,
 } from "./wakeWordEvents";
+import { publishWakeWordCue } from "@/lib/storage/wakeWordCueTrigger";
 
 export interface VoiceSessionGateInput {
   /** ChatPanel's SpeechStatus ("idle" | "speaking" | "listening" | ...). */
@@ -146,14 +147,16 @@ export function WakeWordChatBridge(props: WakeWordChatBridgeProps) {
       controller.on("detected", (event) => {
         const { cueFlashColor, cueBlinkDurationMs, cueAnimationUrl } =
           useWakeWordSettingsStore.getState();
-        dispatchWakeWordDetected({
-          ...event,
-          cue: {
-            flashColor: cueFlashColor,
-            blinkDurationMs: cueBlinkDurationMs,
-            animationUrl: cueAnimationUrl,
-          },
-        });
+        const cue = {
+          flashColor: cueFlashColor,
+          blinkDurationMs: cueBlinkDurationMs,
+          animationUrl: cueAnimationUrl,
+        };
+        dispatchWakeWordDetected({ ...event, cue });
+        // Cross-window relay: while the hologram is active the main window's
+        // AvatarScene is UNMOUNTED (app/page.tsx), so the cue must be published
+        // by the bridge (always mounted) for the /hologram window to replay it.
+        publishWakeWordCue(cue);
         if (shouldTriggerVoiceSession(gateRef.current)) {
           requestStartMicRef.current({ forceSentenceAutoSubmit: true });
         }

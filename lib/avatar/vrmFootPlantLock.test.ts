@@ -24,6 +24,23 @@ describe("VrmFootPlantLock", () => {
     expect(worldPosition(rightFoot).distanceTo(rightAnchor)).toBeLessThan(0.0001);
   });
 
+  it("stops correcting feet while suspended via setEnabled and resumes pinning after re-enabling", () => {
+    const { vrm, leftFoot } = createFootedVrm();
+    const lock = new VrmFootPlantLock(vrm);
+
+    lock.update();
+    const anchor = worldPosition(leftFoot);
+
+    lock.setEnabled(false);
+    leftFoot.position.x += 0.03;
+    lock.update();
+    expect(worldPosition(leftFoot).distanceTo(anchor)).toBeGreaterThan(0.02);
+
+    lock.setEnabled(true);
+    lock.update();
+    expect(worldPosition(leftFoot).distanceTo(anchor)).toBeLessThan(0.0001);
+  });
+
   it("falls back to raw foot bones when normalized bones are unavailable", () => {
     const { vrm, leftFoot } = createFootedVrm({ normalized: false });
     const lock = new VrmFootPlantLock(vrm);

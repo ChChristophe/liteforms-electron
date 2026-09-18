@@ -163,12 +163,40 @@ demonstrated need.
   deployment work, not generic React code.
 - Prefer reversible diagnostics and avoid destructive system commands.
 
-## Porting from Web
+## Porting from Web — mandatory audit
 
-Compare the current file in both repositories before porting. The Electron
-tree is intentionally divergent, especially in `ChatPanel`, `AvatarScene`,
-storage, speech, and hologram code. Port domain logic and tests selectively;
-adapt integration points instead of overwriting files.
+Compare the current file in both repositories before porting. The Electron tree
+is intentionally divergent, especially in `ChatPanel`, `AvatarScene`, storage,
+speech, and hologram code. Port domain logic and tests selectively; adapt
+integration points instead of overwriting files.
+
+A commit whose message starts with `Jarvis:` is an **input to audit, never
+trusted reference code** (rule `Liteforms-Mobile-Application/PLAN.md` §6.4). A
+feature that works can still carry bad error handling, resource leaks, hidden
+browser assumptions, weak validation or useless abstraction. **"Byte-identical
+to Web" is NOT proof of quality** — do not present it as one.
+
+Before a ported feature counts as done, write the audit trace
+(`docs/porting/<feature>-audit.md`, template in mobile PLAN §6.5) and satisfy
+this gate:
+
+1. read the full commit diff AND the neighbouring files;
+2. state the user-visible behaviour to preserve and the data contract;
+3. read the existing tests and list what they do NOT cover;
+4. search every caller, effect and dependency — never delete, rename or
+   "clean up" a symbol based on a single grep;
+5. separate domain logic / web UI / browser APIs / platform adapters;
+6. hunt the smells: `any`, abusive casts, duplicated state, network calls in
+   render, missing timeout or cleanup, sensitive logs, resource leaks,
+   unjustified O(n²), race conditions, silent errors;
+7. adapt the Electron divergence rather than overwriting files;
+8. add at least one error case, one lifecycle/cleanup case, and one
+   data-compatibility case when the feature has state;
+9. record the decision in the audit trace before declaring the task done.
+
+Do not port a feature whose behaviour is ambiguous, whose security is not
+understood, whose contract is undefined, or whose tests cannot tell a correct
+implementation from a happy path — document the blocker and stop.
 
 ## Verification
 

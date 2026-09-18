@@ -172,4 +172,66 @@ describe("parseDeviceConfig wakeWord validation (protocol 18/09/2026)", () => {
     expect(result.config.wakeWord).toEqual({ model: null });
     expect(result.warnings).toEqual(["wakeWord.model `42` ignoré (inconnu)"]);
   });
+
+  it("accepts a full valid cue (all three fields) without a warning", () => {
+    const cue = { flashColor: "#ff0044", blinkDurationMs: 1500, animationUrl: "/animations/Greeting.vrma" };
+    const result = parseWakeWord({ model: "hey_jarvis", cue }) as { config: PocDeviceConfig; warnings: string[] };
+
+    expect(result.config.wakeWord).toEqual({ model: "hey_jarvis", cue });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("accepts a partial cue (only the fields sent are kept)", () => {
+    const result = parseWakeWord({ model: "alexa", cue: { flashColor: "#22d3ee" } }) as {
+      config: PocDeviceConfig;
+      warnings: string[];
+    };
+
+    expect(result.config.wakeWord).toEqual({ model: "alexa", cue: { flashColor: "#22d3ee" } });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("dropping cue fields independently: invalid color/duration/animation warned and omitted, valid ones kept", () => {
+    const result = parseWakeWord({
+      model: "alexa",
+      cue: { flashColor: "#FF0044", blinkDurationMs: 900, animationUrl: "/animations/nope.vrma" }
+    }) as { config: PocDeviceConfig; warnings: string[] };
+
+    // Flash color must be lowercase strict, animation must exist in ANIMATION_OPTIONS.
+    expect(result.config.wakeWord).toEqual({ model: "alexa", cue: { blinkDurationMs: 900 } });
+    expect(result.warnings).toEqual([
+      "wakeWord.cue.flashColor ignoré (attendu #rrggbb minuscule)",
+      "wakeWord.cue.animationUrl ignoré (animation inconnue)"
+    ]);
+  });
+
+  it("drops an out-of-bounds or non-integer blinkDurationMs with a warning", () => {
+    for (const bad of [299, 3001, 900.5, Number.NaN, "900"]) {
+      const result = parseWakeWord({ cue: { blinkDurationMs: bad } }) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(result.config.wakeWord?.cue).toBeUndefined();
+      expect(result.warnings).toEqual([
+        "wakeWord.cue.blinkDurationMs ignoré (entier 300–3000 attendu)"
+      ]);
+    }
+  });
+
+  it("omits a cue that has no valid field (local cue settings survive)", () => {
+    const result = parseWakeWord({ model: "hey_jarvis", cue: { flashColor: "red", animationUrl: 7 } }) as {
+      config: PocDeviceConfig;
+      warnings: string[];
+    };
+
+    expect(result.config.wakeWord).toEqual({ model: "hey_jarvis" });
+    expect(result.warnings).toHaveLength(2);
+  });
+
+  it("absent cue keeps the existing model semantics and emits no warning", () => {
+    const result = parseWakeWord({ model: "hey_mycroft" }) as { config: PocDeviceConfig; warnings: string[] };
+
+    expect(result.config.wakeWord).toEqual({ model: "hey_mycroft" });
+    expect(result.warnings).toEqual([]);
+  });
 });

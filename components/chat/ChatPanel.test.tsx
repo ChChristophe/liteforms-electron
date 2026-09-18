@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor, act, within } from "@testing-library/react";
 import { ChatPanel, _clearPreloadSessionsForTesting } from "./ChatPanel";
 import type { CharacterConfig } from "./ChatPanel";
 import { createLlmAdapter } from "@/lib/llm";
@@ -20,9 +20,14 @@ afterEach(cleanup);
 // Mocked at module scope so the function-call and expiry paths can be driven
 // without real tool execution or audio.
 
-const { executeToolMock, playTimerChimeMock } = vi.hoisted(() => ({
+const { executeToolMock, playTimerChimeMock, wakeWordBridgeRef } = vi.hoisted(() => ({
   executeToolMock: vi.fn(),
-  playTimerChimeMock: vi.fn()
+  playTimerChimeMock: vi.fn(),
+  wakeWordBridgeRef: {
+    current: null as null | {
+      requestStartMic: (options?: { forceSentenceAutoSubmit?: boolean }) => void;
+    }
+  }
 }));
 
 vi.mock("@/lib/llm/toolRegistry", () => ({
@@ -32,6 +37,21 @@ vi.mock("@/lib/llm/toolRegistry", () => ({
 vi.mock("@/lib/speech/timerChime", () => ({
   playTimerChime: playTimerChimeMock
 }));
+
+// Capture the bridge props so tests can trigger the wake-word path exactly as
+// the real bridge does, without depending on ONNX detection.
+vi.mock("@/bundles/wakeword", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/bundles/wakeword")>();
+  return {
+    ...actual,
+    WakeWordChatBridge: (props: {
+      requestStartMic: (options?: { forceSentenceAutoSubmit?: boolean }) => void;
+    }) => {
+      wakeWordBridgeRef.current = props;
+      return null;
+    }
+  };
+});
 
 // ── Heavy dependency mocks ──────────────────────────────────────────────────
 
@@ -541,12 +561,14 @@ describe("mic auto-submit flow", () => {
   let getUserMediaMock: ReturnType<typeof vi.fn>;
   let latestRealtimeCallbacks: { onPartial?: (text: string) => void; onTranscript?: (text: string, event: { final: boolean }) => void; onError?: (error: Error) => void } | null = null;
   let latestRealtimeSession: { stop: ReturnType<typeof vi.fn>; isActive: ReturnType<typeof vi.fn> } | null = null;
+  let capturedRealtimeInput: Parameters<typeof createGoogleLiveBrowserSession>[0] | null = null;
 
   beforeEach(() => {
     vi.clearAllMocks();
     capturedRecorder = null;
     latestRealtimeCallbacks = null;
     latestRealtimeSession = null;
+    capturedRealtimeInput = null;
     const MockRecorderClass = class extends MockMediaRecorder {
       constructor(...args: unknown[]) {
         super(...args as []);
@@ -879,7 +901,7 @@ describe("mic auto-submit flow", () => {
     expect(vi.mocked(createLlmAdapter)).not.toHaveBeenCalled();
   });
 
-  it("auto-restarts mic recording after full LLM + TTS completion in dynamic mode", async () => {
+  it("auto-restarts mic recording after full LLM + TTS completion when dynamic input came from audio", async () => {
     vi.mocked(createLlmAdapter).mockReturnValueOnce({
       id: "browser-local-gemma",
       streamText: vi.fn().mockReturnValue(
@@ -889,13 +911,17 @@ describe("mic auto-submit flow", () => {
 
     renderPanel(); // default: dynamic mode
 
-    fireEvent.change(screen.getByPlaceholderText("Type a message…"), { target: { value: "hi" } });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    // Web parity (bbf7a74): only a voice submit may auto-restart the mic, so
+    // this test must go through the mic path, not a typed message.
+    fireEvent.click(screen.getByRole("button", { name: "Start dynamic recording" }));
+    await waitFor(() => screen.getByRole("button", { name: "Listening for pause" }));
+
+    latestRealtimeCallbacks?.onTranscript?.("hi from mic", { final: true });
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Listening for pause" })).toBeInTheDocument();
     });
-    expect(createAsrRealtimeSession).toHaveBeenCalledTimes(1);
+    expect(createAsrRealtimeSession).toHaveBeenCalledTimes(2);
   });
 
   it("does not auto-restart mic recording after TTS in hold mode", async () => {
@@ -960,6 +986,134 @@ describe("mic auto-submit flow", () => {
       expect(screen.getByText("Transcription failed hard")).toBeInTheDocument();
     });
     expect(vi.mocked(createLlmAdapter)).not.toHaveBeenCalled();
+  });
+
+  // ── Wake-word idle timeout (improvement over Web parity) ───────────────────
+  // A wake-word session that never receives user speech must release the mic:
+  // the ASR pause detector needs speech, and Realtime only ends on response.done.
+  // Manual mic sessions must keep their previous behaviour (no timeout).
+
+  const WAKE_WORD_IDLE_MS = 8000;
+
+  it("ends a wake-word ASR session with no speech after the idle timeout and returns to idle", async () => {
+    vi.useFakeTimers();
+    renderPanel();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    wakeWordBridgeRef.current?.requestStartMic({ forceSentenceAutoSubmit: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole("button", { name: "Listening for pause" })).toBeInTheDocument();
+    expect(latestRealtimeSession?.stop).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(WAKE_WORD_IDLE_MS);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(latestRealtimeSession?.stop).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Start dynamic recording" })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("cancels the wake-word ASR idle timeout once speech is heard", async () => {
+    vi.useFakeTimers();
+    renderPanel();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    wakeWordBridgeRef.current?.requestStartMic({ forceSentenceAutoSubmit: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    act(() => { latestRealtimeCallbacks?.onPartial?.("bonjour"); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(WAKE_WORD_IDLE_MS); });
+
+    expect(latestRealtimeSession?.stop).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Listening for pause" })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("does not idle-timeout a manually started ASR session", async () => {
+    vi.useFakeTimers();
+    renderPanel();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start dynamic recording" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByRole("button", { name: "Listening for pause" })).toBeInTheDocument();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(WAKE_WORD_IDLE_MS); });
+
+    expect(latestRealtimeSession?.stop).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Listening for pause" })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  function startWakeWordRealtimeSession() {
+    const session = createMockRealtimeSession();
+    vi.mocked(createGoogleLiveBrowserSession).mockImplementationOnce((input) => {
+      capturedRealtimeInput = input;
+      return session;
+    });
+    stubRealtimeAudioEnvironment();
+    renderPanelWithConfig({ initialRealtimeVoiceConfig: googleLiveConfig });
+    return session;
+  }
+
+  function micControls() {
+    return within(screen.getByRole("group", { name: "Mic controls" }));
+  }
+
+  it("ends a wake-word realtime session with no speech after the idle timeout and returns to idle", async () => {
+    vi.useFakeTimers();
+    const session = startWakeWordRealtimeSession();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    wakeWordBridgeRef.current?.requestStartMic({ forceSentenceAutoSubmit: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    expect(capturedRealtimeInput).not.toBeNull();
+    expect(session.start).toHaveBeenCalled();
+    expect(micControls().getByRole("button", { name: /stop google live/i })).toBeInTheDocument();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(WAKE_WORD_IDLE_MS); });
+
+    expect(session.stop).toHaveBeenCalledTimes(1);
+    expect(micControls().getByRole("button", { name: /start google live/i })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("cancels the wake-word realtime idle timeout once the user speaks", async () => {
+    vi.useFakeTimers();
+    const session = startWakeWordRealtimeSession();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    wakeWordBridgeRef.current?.requestStartMic({ forceSentenceAutoSubmit: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    act(() => { capturedRealtimeInput?.onUserTranscript?.("bonjour", false); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(WAKE_WORD_IDLE_MS); });
+
+    expect(session.stop).not.toHaveBeenCalled();
+    expect(micControls().getByRole("button", { name: /stop google live/i })).toBeInTheDocument();
+    vi.useRealTimers();
+  });
+
+  it("clears the wake-word realtime idle timer when the session is stopped manually", async () => {
+    vi.useFakeTimers();
+    const session = startWakeWordRealtimeSession();
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    wakeWordBridgeRef.current?.requestStartMic({ forceSentenceAutoSubmit: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    fireEvent.click(micControls().getByRole("button", { name: /stop google live/i }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(session.stop).toHaveBeenCalledTimes(1);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(WAKE_WORD_IDLE_MS); });
+
+    expect(session.stop).toHaveBeenCalledTimes(1);
+    expect(micControls().getByRole("button", { name: /start google live/i })).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });
 

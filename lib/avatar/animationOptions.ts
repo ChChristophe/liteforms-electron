@@ -25,3 +25,7 @@ export const ANIMATION_OPTIONS: AnimationOption[] = [
   { label: "Thinking", url: "/animations/Thinking.vrma" },
   { label: "Walk", url: "/animations/walk.vrma" },
 ];
+
+export const IDLE_FIDGET_ANIMATION_URLS: readonly string[] = ANIMATION_OPTIONS.filter(
+  (option) => option.url !== "/animations/idle_loop.vrma"
+).map((option) => option.url);

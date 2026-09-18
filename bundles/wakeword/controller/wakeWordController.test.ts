@@ -287,4 +287,22 @@ describe("WakeWordController", () => {
     expect(errors[0].code).toBe("UNKNOWN");
     expect(errors[0].message).toBe("mic failed");
   });
+
+  it("releases the microphone and emits a typed error when inference fails", async () => {
+    const errors: Array<{ code: string }> = [];
+    const c = new WakeWordController();
+    await c.start();
+    c.on("error", (e) => errors.push(e));
+
+    lastEngine().predictImpl = () => {
+      throw new Error("ort boom");
+    };
+    lastMic().onFrame(new Int16Array(1280));
+    await flush();
+
+    expect(c.status).toBe("error");
+    expect(errors).toHaveLength(1);
+    // A failed pipeline must not keep the capture device open.
+    expect(lastMic().stopped).toBe(true);
+  });
 });

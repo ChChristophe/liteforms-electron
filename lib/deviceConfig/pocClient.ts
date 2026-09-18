@@ -1,6 +1,6 @@
 "use client";
 
-import { parseDeviceConfig, describeConfigSummary, type PocDeviceConfig } from "@/lib/deviceConfig/pocConfig";
+import { parseDeviceConfig, describeConfigSummary, type PocDeviceConfig, type PocWakeWordCueConfig } from "@/lib/deviceConfig/pocConfig";
 import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import { saveCharacterConfig } from "@/lib/storage/characterConfig";
 import { saveEnvironmentConfig } from "@/lib/storage/environmentConfig";
@@ -49,6 +49,9 @@ export type PocApplyHooks = {
   /** Live wake word selection hook (null = manual microphone). Optional: an
    * absent wakeWord block never calls it, so the local UI selection survives. */
   onWakeWord?(model: string | null): void;
+  /** Live wake word visual-cue hook (only the fields the Mobile sent). Optional:
+   * an absent/invalid cue never calls it, so the local cue settings survive. */
+  onWakeWordCue?(cue: PocWakeWordCueConfig): void;
 };
 
 export type PocApplyResult = { applied: string[]; warnings: string[] };
@@ -262,6 +265,13 @@ export async function applyPocDeviceConfig(
   if (config.wakeWord) {
     hooks.onWakeWord?.(config.wakeWord.model);
     applied.push("wakeWord");
+  }
+
+  // wakeWord.cue -> bundle cue settings via the caller's hook, only for the
+  // fields actually sent (the parser guarantees at least one valid field here).
+  if (config.wakeWord?.cue) {
+    hooks.onWakeWordCue?.(config.wakeWord.cue);
+    applied.push("wakeWordCue");
   }
 
   // providers -> mapped session stores; the caller remounts the ChatPanel.

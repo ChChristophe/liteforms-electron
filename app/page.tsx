@@ -142,7 +142,15 @@ export default function HomePage() {
       // Device-config wake word -> bundle store; the model is already
       // validated against the four known ids by parseDeviceConfig.
       onWakeWord: (model) =>
-        useWakeWordSettingsStore.getState().setSelected(model as WakewordModelName | null)
+        useWakeWordSettingsStore.getState().setSelected(model as WakewordModelName | null),
+      // Device-config wake word cue -> bundle store, only for the fields the
+      // Mobile actually sent (parseWakeWordCue already dropped the invalid ones).
+      onWakeWordCue: (cue) => {
+        const store = useWakeWordSettingsStore.getState();
+        if (cue.flashColor !== undefined) store.setCueFlashColor(cue.flashColor);
+        if (cue.blinkDurationMs !== undefined) store.setCueBlinkDurationMs(cue.blinkDurationMs);
+        if (cue.animationUrl !== undefined) store.setCueAnimationUrl(cue.animationUrl);
+      }
     });
 
     let stopPocDeviceConfigPolling: (() => void) | undefined;

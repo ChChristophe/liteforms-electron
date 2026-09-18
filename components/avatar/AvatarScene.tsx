@@ -20,8 +20,22 @@ import { VRMAnimationLoaderPlugin } from "@pixiv/three-vrm-animation";
 import { getMissingVrm0MouthMorphTargets } from "@/lib/avatar/morphTargetController";
 import { avatarLipSyncEventName } from "@/lib/avatar/lipSyncEvents";
 import type { AvatarLipSyncFrame } from "@/lib/avatar/lipSyncEvents";
+import {
+  startWakeWordCue,
+  WAKE_WORD_CUE_DEFAULT_ANIMATION_URL,
+  WAKE_WORD_CUE_FLASH_COLOR,
+} from "@/lib/avatar/wakeWordCue";
+import { WAKE_WORD_DETECTED_EVENT } from "@/bundles/wakeword/bridge/wakeWordEvents";
+import type { WakeWordDetectedEvent } from "@/bundles/wakeword/types";
+import {
+  WAKE_WORD_CUE_TRIGGER_KEY,
+  parseWakeWordCueTrigger,
+  type WakeWordCueTriggerCue,
+} from "@/lib/storage/wakeWordCueTrigger";
 import { VrmRuntimeAnimator } from "@/lib/avatar/vrmRuntimeAnimator";
-import { loadVrmAnimationClip, VrmIdleAnimator } from "@/lib/avatar/vrmAnimationLoader";
+import { loadVrmAnimationClip } from "@/lib/avatar/vrmAnimationLoader";
+import { IdleChoreographer } from "@/lib/avatar/idleChoreographer";
+import { IDLE_FIDGET_ANIMATION_URLS } from "@/lib/avatar/animationOptions";
 import {
   computeLkgInlineViewSize,
   computeLookingGlassFocalPoint,
@@ -77,6 +91,7 @@ import {
 } from "@/lib/avatar/nativeLookingGlassBridge";
 import { installEditableKeyboardEventShield } from "@/lib/avatar/keyboardEventShield";
 import { createModelDragRotationController } from "@/lib/avatar/modelDragRotation";
+import { createLookingGlassCalibrationSync } from "@/lib/avatar/lookingGlassCalibrationSync";
 import {
   AVATAR_CAMERA_ASPECT,
   AVATAR_CAMERA_DEFAULT_POSITION,
@@ -287,7 +302,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
   const poseRef = useRef<AvatarPoseConfig>(pose);
   const applyPoseRef = useRef<((pose: AvatarPoseConfig) => void) | undefined>(undefined);
   const vrmRef = useRef<VRM | undefined>(undefined);
-  const idleAnimatorRef = useRef<VrmIdleAnimator | undefined>(undefined);
+  const idleAnimatorRef = useRef<IdleChoreographer | undefined>(undefined);
   const loaderRef = useRef<GLTFLoader | undefined>(undefined);
   const warnedMissingMorphsRef = useRef(new Set<string>());
   const [status, setStatus] = useState("Loading avatar");
@@ -329,9 +344,12 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
     let environmentObject: Object3D | undefined;
     let currentVrm: VRM | undefined;
     let runtimeAnimator: VrmRuntimeAnimator | undefined;
-    let idleAnimator: VrmIdleAnimator | undefined;
+    let idleAnimator: IdleChoreographer | undefined;
     let resizeListener: (() => void) | undefined;
     let lipSyncListener: ((event: Event) => void) | undefined;
+    let wakeWordListener: ((event: Event) => void) | undefined;
+    let wakeWordCueStorageListener: ((event: StorageEvent) => void) | undefined;
+    let cancelWakeWordCue: (() => void) | null = null;
     let modelPointerDownListener: ((event: PointerEvent) => void) | undefined;
     let modelPointerMoveListener: ((event: PointerEvent) => void) | undefined;
     let modelPointerUpListener: ((event: PointerEvent) => void) | undefined;
@@ -506,11 +524,7 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       renderer.domElement.addEventListener("pointerup", modelPointerUpListener);
       renderer.domElement.addEventListener("pointercancel", modelPointerCancelListener);
 
-      const lkgConfigChangeListener = () => {};
-      LookingGlassConfig.addEventListener("on-config-changed", lkgConfigChangeListener);
-      lkgConfigChangeCleanup = () => {
-        LookingGlassConfig.removeEventListener("on-config-changed", lkgConfigChangeListener);
-      };
+      lkgConfigChangeCleanup = createLookingGlassCalibrationSync(LookingGlassConfig);
       const ambientLight = new AmbientLight("#fff6e5", 1.2);
       const keyLight = new DirectionalLight("#ffffff", 2.4);
       keyLight.position.set(0.5, 0.5, 2);
@@ -598,6 +612,56 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       };
       lipSyncListener = onLipSyncFrame;
       window.addEventListener(avatarLipSyncEventName, onLipSyncFrame);
+
+      // Wake word visual cue (ETUDES §5): fast alcove tint blink + greeting
+      // clip. Fire-and-forget timers only — never on the detection→mic path.
+      const playWakeWordCue = (cue?: WakeWordCueTriggerCue) => {
+        logDiagnostic(
+          `wake word cue | hologram=${isHologramWindow()} ` +
+          `envVisible=${environmentObjectRef.current?.visible === true} ` +
+          `color=${cue?.flashColor || WAKE_WORD_CUE_FLASH_COLOR} ` +
+          `animation=${cue?.animationUrl || WAKE_WORD_CUE_DEFAULT_ANIMATION_URL}`
+        );
+        cancelWakeWordCue?.();
+        cancelWakeWordCue = startWakeWordCue({
+          showFlash: () => {
+            // HLD fallback hides the alcove entirely: nothing to flash.
+            if (!environmentObjectRef.current?.visible) return;
+            applyEnvironmentTint(
+              environmentObjectRef.current,
+              cue?.flashColor || WAKE_WORD_CUE_FLASH_COLOR
+            );
+          },
+          hideFlash: () => {
+            if (!environmentObjectRef.current?.visible) return;
+            applyEnvironmentTint(
+              environmentObjectRef.current,
+              environmentTintRef.current || undefined
+            );
+          },
+          playGreeting: () =>
+            idleAnimatorRef.current?.playClipNow(
+              cue?.animationUrl || WAKE_WORD_CUE_DEFAULT_ANIMATION_URL
+            )
+        }, { durationMs: cue?.blinkDurationMs });
+      };
+
+      wakeWordListener = (event: Event) => {
+        // Same-window path only (hologram inactive): the bridge is responsible
+        // for the cross-window localStorage relay, because this AvatarScene is
+        // unmounted whenever the hologram window is active.
+        const cue = (event as CustomEvent<WakeWordDetectedEvent>).detail?.cue;
+        playWakeWordCue(cue);
+      };
+      window.addEventListener(WAKE_WORD_DETECTED_EVENT, wakeWordListener);
+
+      // Replay the cue relayed by the main window (same pattern as mood/pose).
+      wakeWordCueStorageListener = (event: StorageEvent) => {
+        if (event.key !== WAKE_WORD_CUE_TRIGGER_KEY) return;
+        const trigger = parseWakeWordCueTrigger(event.newValue);
+        if (trigger) playWakeWordCue(trigger.cue);
+      };
+      window.addEventListener("storage", wakeWordCueStorageListener);
 
       const loader = new GLTFLoader();
       loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -736,7 +800,16 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
             if (disposed || !clip) return;
             idleAnimator?.dispose();
             idleAnimatorRef.current?.dispose();
-            idleAnimator = new VrmIdleAnimator(loadedVrm, clip);
+            idleAnimator = new IdleChoreographer(loadedVrm, {
+              idleClip: clip,
+              loadClip: (url) => loadVrmAnimationClip(url, loadedVrm, loader),
+              fidgetUrls: IDLE_FIDGET_ANIMATION_URLS,
+              onFidgetStart: () => runtimeAnimator?.setFootPlantEnabled(false),
+              onFidgetEnd: () => {
+                runtimeAnimator?.setFootPlantEnabled(true);
+                runtimeAnimator?.resetFootPlant();
+              }
+            });
             idleAnimatorRef.current = idleAnimator;
             runtimeAnimator?.resetFootPlant();
           });
@@ -1153,6 +1226,9 @@ export function AvatarScene({ modelUrl = DEFAULT_MODEL_URL, hideVrButton = false
       renderer?.setAnimationLoop(null);
       if (resizeListener) window.removeEventListener("resize", resizeListener);
       if (lipSyncListener) window.removeEventListener(avatarLipSyncEventName, lipSyncListener);
+      if (wakeWordListener) window.removeEventListener(WAKE_WORD_DETECTED_EVENT, wakeWordListener);
+      if (wakeWordCueStorageListener) window.removeEventListener("storage", wakeWordCueStorageListener);
+      cancelWakeWordCue?.();
       if (renderer?.domElement && modelPointerDownListener) {
         renderer.domElement.removeEventListener("pointerdown", modelPointerDownListener);
       }

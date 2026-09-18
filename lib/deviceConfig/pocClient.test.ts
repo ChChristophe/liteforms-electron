@@ -53,6 +53,7 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
   moods: (string | null)[];
   poses: AvatarPoseConfig[];
   wakeWords: (string | null)[];
+  wakeWordCues: { flashColor?: string; blinkDurationMs?: number; animationUrl?: string }[];
 } {
   const characters: object[] = [];
   const sessions: object[] = [];
@@ -60,6 +61,7 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
   const moods: (string | null)[] = [];
   const poses: AvatarPoseConfig[] = [];
   const wakeWords: (string | null)[] = [];
+  const wakeWordCues: { flashColor?: string; blinkDurationMs?: number; animationUrl?: string }[] = [];
   const vrm: StoredVrm = { arrayBuffer: new ArrayBuffer(1), fileName: "lobsterEdit.vrm" };
   const repo: VrmRepository = {
     load: () => Promise.resolve(vrm),
@@ -73,6 +75,7 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
     moods,
     poses,
     wakeWords,
+    wakeWordCues,
     hooks: {
       setCharacter: (c) => characters.push(c),
       onSessionConfig: (s) => sessions.push(s),
@@ -81,6 +84,7 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
       onMoodPreset: (m) => moods.push(m),
       onPose: (p) => poses.push(p),
       onWakeWord: (m) => wakeWords.push(m),
+      onWakeWordCue: (c) => wakeWordCues.push(c),
       ...overrides
     }
   };
@@ -417,5 +421,57 @@ describe("wakeWord from device-config (protocol 18/09/2026)", () => {
 
     expect(wakeWords).toEqual([]);
     expect(result.applied).not.toContain("wakeWord");
+  });
+
+  it("calls onWakeWordCue with the fields present and marks the block applied", async () => {
+    const { hooks, wakeWordCues } = createHooks();
+
+    const result = await applyPocDeviceConfig(
+      {
+        ...validPayload,
+        receivedAt: "r-wake-cue",
+        wakeWord: {
+          model: "hey_jarvis",
+          cue: { flashColor: "#ff0044", blinkDurationMs: 1500, animationUrl: "/animations/Surprised.vrma" }
+        }
+      },
+      hooks
+    );
+
+    expect(result.applied).toContain("wakeWordCue");
+    expect(wakeWordCues).toEqual([
+      { flashColor: "#ff0044", blinkDurationMs: 1500, animationUrl: "/animations/Surprised.vrma" }
+    ]);
+  });
+
+  it("calls onWakeWordCue with a partial cue (only the fields sent)", async () => {
+    const { hooks, wakeWordCues } = createHooks();
+
+    await applyPocDeviceConfig(
+      { ...validPayload, receivedAt: "r-wake-cue-partial", wakeWord: { model: "alexa", cue: { blinkDurationMs: 1200 } } },
+      hooks
+    );
+
+    expect(wakeWordCues).toEqual([{ blinkDurationMs: 1200 }]);
+  });
+
+  it("does not call onWakeWordCue when the cue is absent or fully invalid (local cue survives)", async () => {
+    const { hooks, wakeWordCues } = createHooks();
+
+    const absent = await applyPocDeviceConfig({ ...validPayload, receivedAt: "r-cue-absent" }, hooks);
+    const invalid = await applyPocDeviceConfig(
+      {
+        ...validPayload,
+        receivedAt: "r-cue-invalid",
+        wakeWord: { model: "alexa", cue: { flashColor: "#FF0044", blinkDurationMs: 90000 } }
+      },
+      hooks
+    );
+
+    expect(wakeWordCues).toEqual([]);
+    expect(absent.applied).not.toContain("wakeWordCue");
+    expect(invalid.applied).not.toContain("wakeWordCue");
+    expect(invalid.warnings).toContain("wakeWord.cue.flashColor ignoré (attendu #rrggbb minuscule)");
+    expect(invalid.warnings).toContain("wakeWord.cue.blinkDurationMs ignoré (entier 300–3000 attendu)");
   });
 });

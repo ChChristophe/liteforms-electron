@@ -13,6 +13,11 @@ import {
   clampZoom,
   type AvatarPoseConfig,
 } from "@/lib/avatar/avatarPose";
+import { ANIMATION_OPTIONS } from "@/lib/avatar/animationOptions";
+import {
+  WAKE_WORD_CUE_MAX_DURATION_MS,
+  WAKE_WORD_CUE_MIN_DURATION_MS,
+} from "@/lib/avatar/wakeWordCue";
 
 export type PocCharacterConfig = {
   name: string;
@@ -32,8 +37,18 @@ export type PocModelRef = {
 export const WAKEWORD_MODEL_IDS = ["hey_jarvis", "alexa", "hey_mycroft", "hey_rhasspy"] as const;
 export type WakewordModelId = (typeof WAKEWORD_MODEL_IDS)[number];
 
+/** Optional visual-cue settings of the wake word confirmation (protocol
+ * §Bloc `wakeWord`). Each field is validated independently: an invalid field
+ * is dropped with a warning, never a 400. */
+export type PocWakeWordCueConfig = {
+  flashColor?: string;
+  blinkDurationMs?: number;
+  animationUrl?: string;
+};
+
 export type PocWakeWordConfig = {
   model: WakewordModelId | null;
+  cue?: PocWakeWordCueConfig;
 };
 
 export type PocDeviceConfig = {
@@ -132,15 +147,22 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
   let wakeWord: PocWakeWordConfig | undefined;
   const rawWakeWord = body.wakeWord;
   if (typeof rawWakeWord === "object" && rawWakeWord !== null) {
-    const rawModel = (rawWakeWord as Record<string, unknown>).model;
+    const wakeWordSource = rawWakeWord as Record<string, unknown>;
+    const rawModel = wakeWordSource.model;
+    let model: WakewordModelId | null;
     if (rawModel === undefined || rawModel === null) {
-      wakeWord = { model: null };
+      model = null;
     } else if (typeof rawModel === "string" && (WAKEWORD_MODEL_IDS as readonly string[]).includes(rawModel)) {
-      wakeWord = { model: rawModel as WakewordModelId };
+      model = rawModel as WakewordModelId;
     } else {
       warnings.push(`wakeWord.model \`${String(rawModel)}\` ignoré (inconnu)`);
-      wakeWord = { model: null };
+      model = null;
     }
+    // cue: independent of model; absent cue = the appliance keeps its local
+    // cue settings (the phone is authoritative only about what it sends).
+    const { cue, warnings: cueWarnings } = parseWakeWordCue(wakeWordSource.cue);
+    warnings.push(...cueWarnings);
+    wakeWord = { model, ...(cue !== undefined ? { cue } : {}) };
   }
   return {
     warnings,
@@ -227,6 +249,50 @@ export function parseAvatarPose(value: unknown): { pose: AvatarPoseConfig; warni
   return { pose, warnings };
 }
 
+/**
+ * Validates the optional `wakeWord.cue` block appliance-side (protocol §Bloc
+ * `wakeWord`). Every present field is checked independently; an invalid field is
+ * dropped with a `wakeWord.cue.<field> ignoré (…)` warning (never a 400) while
+ * the other fields still apply. A cue with no valid field is omitted entirely,
+ * so the appliance keeps its local cue settings.
+ */
+export function parseWakeWordCue(value: unknown): { cue?: PocWakeWordCueConfig; warnings: string[] } {
+  const warnings: string[] = [];
+  if (typeof value !== "object" || value === null) return { warnings };
+  const source = value as Record<string, unknown>;
+  const cue: PocWakeWordCueConfig = {};
+
+  if (source.flashColor !== undefined) {
+    if (typeof source.flashColor === "string" && /^#[0-9a-f]{6}$/.test(source.flashColor)) {
+      cue.flashColor = source.flashColor;
+    } else {
+      warnings.push("wakeWord.cue.flashColor ignoré (attendu #rrggbb minuscule)");
+    }
+  }
+
+  if (source.blinkDurationMs !== undefined) {
+    const ms = source.blinkDurationMs;
+    if (
+      typeof ms === "number" && Number.isInteger(ms) &&
+      ms >= WAKE_WORD_CUE_MIN_DURATION_MS && ms <= WAKE_WORD_CUE_MAX_DURATION_MS
+    ) {
+      cue.blinkDurationMs = ms;
+    } else {
+      warnings.push(`wakeWord.cue.blinkDurationMs ignoré (entier ${WAKE_WORD_CUE_MIN_DURATION_MS}–${WAKE_WORD_CUE_MAX_DURATION_MS} attendu)`);
+    }
+  }
+
+  if (source.animationUrl !== undefined) {
+    if (typeof source.animationUrl === "string" && ANIMATION_OPTIONS.some((option) => option.url === source.animationUrl)) {
+      cue.animationUrl = source.animationUrl;
+    } else {
+      warnings.push("wakeWord.cue.animationUrl ignoré (animation inconnue)");
+    }
+  }
+
+  return Object.keys(cue).length > 0 ? { cue, warnings } : { warnings };
+}
+
 function parseModelRef(value: unknown): PocModelRef | null {
   if (typeof value !== "object" || value === null) return null;
   const v = value as Record<string, unknown>;
@@ -240,7 +306,7 @@ export function describeConfigSummary(config: {
   character: { name: string; pronouns: string };
   avatar: { mood?: string; modelRef?: { id: string; fileName: string } | null; pose?: AvatarPoseConfig | null };
   providers: { llm: { provider: string }; tts: { provider: string }; stt: { provider: string } };
-  wakeWord?: { model: string | null };
+  wakeWord?: { model: string | null; cue?: PocWakeWordCueConfig };
 }): string {
   const slots = ["llm", "tts", "stt"] as const;
   return `character.name set=${config.character.name.length > 0} pronouns=${config.character.pronouns} ` +
@@ -248,5 +314,6 @@ export function describeConfigSummary(config: {
     `modelRef=${config.avatar.modelRef ? config.avatar.modelRef.fileName : "none"} ` +
     `pose=${config.avatar.pose ? "present" : "none"} ` +
     `wakeWord=${config.wakeWord ? config.wakeWord.model ?? "none" : "absent"} ` +
+    `cue=${config.wakeWord?.cue ? "present" : "none"} ` +
     `providers=${slots.map((slot) => `${slot}:${config.providers[slot].provider}`).join(" ")}`;
 }

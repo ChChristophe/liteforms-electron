@@ -129,6 +129,10 @@ export class VrmRuntimeAnimator {
     this.footPlantLock.reset(settleFrames);
   }
 
+  setFootPlantEnabled(enabled: boolean) {
+    this.footPlantLock.setEnabled(enabled);
+  }
+
   dispose() {
     if (this.vrm.lookAt?.target === this.lookTarget) {
       this.vrm.lookAt.target = null;

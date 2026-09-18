@@ -161,9 +161,9 @@ Fichiers des commits comparés entre l'arbre Electron actuel, la base commune `7
 | 2 | `985278b` | Update provider + erreurs système | 2 | 10 | probablement déjà couvert par la base Electron (onboarding plus riche) |
 | 3 | `b124d76` | Lipsync OpenAI TTS | 3 | 9 | ≈ chaîne lip-sync LKG déjà en place (`vrmRuntimeAnimator` divergé) |
 | 4 | `aba7316` | Modale vitesse d'élocution OpenAI | 2 | 10 | `OnboardingModal.tsx` à adapter |
-| 5 | `95b2784` | Meilleur idle loop + foot place | 3 | 9 | équivalent déjà présent : `VrmIdleAnimator` (`vrmAnimationLoader.ts`) + `vrmFootPlantLock.ts` |
-| 6 | `ff26033` | Depth VRM dans l'alcove | 2 | 10 | à retuner pour le viewport `/hologram` |
-| 7 | `050c195` | Recenter hips animation | 2 | 10 | `vrmAnimationLoader.ts` |
+| 5 | `95b2784` | Meilleur idle loop + foot place | ✅ | **fait 18/09** | **L'audit l'avait classé à tort « équivalent déjà présent »** : `VrmIdleAnimator` n'était qu'un lecteur de boucle, sans fidgets ni interruption. Porté fidèlement : `lib/avatar/idleChoreographer.ts` (+ test), `IDLE_FIDGET_ANIMATION_URLS`, `setEnabled` foot-plant, `setFootPlantEnabled`, câblage `AvatarScene`. C'est la base du `playClipNow` de la cue wake word. |
+| 6 | `ff26033` | Depth VRM dans l'alcove | ✅ | **clos 18/09 sans port** | la profondeur est pilotée par `avatar.pose.depth` (Mobile → device-config → appliance), validé terrain. L'ancre `LOOKING_GLASS_FOCAL_TARGET.z` reste `0.234` (rendu LKG validé) : ne PAS porter la valeur web `0.123`. |
+| 7 | `050c195` | Recenter hips animation | ✅ | **fait 18/09** | `recenterHipsTranslation` dans `vrmAnimationLoader.ts` (+ tests web-parité) : plus de dérive latérale de l'idle. |
 | 8 | `a5c88bb` | **Alcove color** | ✅ | **fait** (4 effectif) | porté + `/hologram` (§1.5) ; **fix 15/09** (`8461e38`) : le port écrivait le tint sur l'`AmbientLight` (rendu dilué, jalons jamais intenses) — root cause : `applyEnvironmentTint` absent du loader ; rétabli web-parité (`environmentLoader`/`AvatarScene`/`environmentConfig` strict hex+null ; matériau teinté, map supprimée, ambient fixe `#fff6e5`) |
 | 9 | `bf978b2` | Emotion en face | ✅ | **partiel** (5 effectif) | mood **appliqué** : `moodConfig` (storage, copy web-parité), `applyVrmMoodPreset` (`vrmExpressionController.applyVrmExpression(1)`, web-parité), `AvatarScene` prop `expressionPreset` (live + post-load), `/hologram` suit `liteforms.moodConfig` via storage-event, chaîne device-config (hook `onMoodPreset` + `saveMoodConfig` + `applied.push("mood")`). **Audit portage** : `moodConfig` conservé tel quel (copie fidèle) ; `applyVrmMoodPreset` conservé (réutilise les fonctions déjà présentes de la copie Electron du controller) ; pattern AvatarScene réimplémenté sur la structure divergée (ref + effect, même pattern que `environmentTintRef`). **Volontairement non porté** : l'UI desktop (§3.1) — `MOOD_OPTIONS`/select `ChatPanel` et handlers `app/page.tsx` web ; le mood vient exclusivement de `POST /api/device-config` (Mobile). **Bug latent corrigé au passage** : `avatar.mood: null` (Mobile « Défaut ») était rejeté en 400 — null/unknown préréglage deviennent warning + mood ignoré, jamais de 400. **Pose : implémentée le 17/09** (`lib/avatar/avatarPose.ts` + `lib/storage/poseConfig.ts` + prop `AvatarScene` + hook `onPose`, `/hologram` via storage-event) — validation terrain à faire ; sémantique dans `protocol/DEVICE_API.md` §Bloc `avatar.pose` |
 | 10 | `922809e` | Fix bugs core | 3 | 8 | re-corriger manuellement un `ChatPanel` fortement divergé |
@@ -186,6 +186,13 @@ Fichiers des commits comparés entre l'arbre Electron actuel, la base commune `7
 | 27 | `a9df03e` | Timers dans ChatPanel (chime + notif) | 4 | 9 | UI + audio chime |
 | 28 | `e1037ce` | get_current_date | 3 | 9 | après l'infra #24 |
 | 29 | `9fc237f` | calculate + parser sûr | 3 | 9 | parser pur + route |
+
+> **⚠️ Commits hors audit, retrouvés le 18/09** (entre la base `7fa7670` et le
+> premier commit audité `4952eed`, donc jamais listés) : `bbf7a74` « mic
+> activating after text input » (porté : `nextSubmitInputSourceRef`) et
+> `941f44b` « non-Go LFDs » (`lookingGlassCalibrationSync`, porté). **Leçon** :
+> l'audit doit balayer toute la plage `base..premier-commit-audité`, pas
+> seulement la liste fournie.
 
 ### 2.3 Verdict du portage
 
@@ -718,10 +725,10 @@ recovery : bouton physique §6.7.
 
 **Portage (workspace `C:\dev\liteforms-electron`)**
 - [x] ~~Portendre 22 (strip markdown) + 25/26/28/29 (parser + timers + function calling), groupe « logique pure ».~~ **FAIT (17/09, non validé terrain)** : strip markdown (dédup `getSafeTextForTts`), parser `calculate` (`%` de la base), `lib/timer/` + `timerStore`, catalogue d'outils + registre, câblage adaptateurs + `ChatPanel`, chime. Détail : §13.
-- [ ] Port `6`/`7` (retunes Alacove/hips) dans la scène Electron + `/hologram`.
+- [x] ~~Port `6`/`7` (retunes Alacove/hips)~~ **FAIT 18/09** : #7 `recenterHipsTranslation` porté (+ tests) ; #6 clos sans port (profondeur via `avatar.pose.depth`, ancre LKG `0.234` conservée).
 - [ ] Port `19`/`20` (conversation ids OpenClaw) puis `2`.
 - [ ] Port `9` (emotion : `moodConfig` + controller + UI).
-- [ ] Port du wake word `11`→`17` (bundles + UI + cue + config), build **single-thread** ort (§6.4), partage du `MediaStream` micro (§6.5).
+- [x] ~~Port du wake word `11`→`17`~~ **FAIT + validé terrain 18/09** : bundle OpenWakeWord (phase 1), intégration ChatPanel (phase 2), `IdleChoreographer` (#5), cue visuelle (#16) + réglages depuis le Mobile (tranches 3/4). ORT **threaded** (COOP/COEP déjà en place → §6.4 corrigé), un seul `MediaStream` partagé (§6.5). Détail : §15/§16.
 - [ ] À chaque groupe : tests + lint + tsc + build.
 
 **Appliance / POC config**
@@ -891,4 +898,9 @@ mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4
 * **Fait (config Mobile = source de vérité)** : `POST /api/device-config` porte un bloc `wakeWord {model}` (protocole 18/09/2026) ; l'appliance l'applique au store (bridge ré-armé) et garde sa sélection locale si le bloc est absent. Côté Mobile : écran `wake-word`, catalogue statique, champ `DeviceConfig.wakeWord`, section au récapitulatif.
 * **Incidents (portages manqués, corrigés)** : (1) handler `onEnd` de la session realtime (web `28cc967`) non porté → **le micro n'était jamais rendu** après le wake word, statut bloqué « listening » ; (2) `close()` du playback AudioContext au démarrage d'une session non porté → fuite d'un AudioContext par session ; (3) stop de la session ASR précédente (web `922809e`).
 * **Réglage** : VAD serveur OpenAI `silence_duration_ms: 800` finit le tour utilisateur ; le micro est rendu à `response.done`.
-* **Reste** : cue visuelle (#16/#17) — `wakeWordCue.ts` porté mais **non consommé** ; manquent le câblage `AvatarScene` et un `playClipNow` adapté à `VrmIdleAnimator` (Electron n'a pas d'`idleChoreographer`).
+* **Tranche 4 (faite, validée terrain)** : cue visuelle — #5 `IdleChoreographer` porté (fidgets 30–50 s + `playClipNow`) et #16 câblage `AvatarScene` (blink alcôve + greeting). `lib/avatar/wakeWordCue.ts` (déjà porté) est désormais consommé.
+* **Incident 18/09 (cue invisible sur le LKG)** : le relais inter-fenêtres `localStorage` était publié par l'`AvatarScene`, qui est **démonté** dès que la fenêtre `/hologram` est active (`app/page.tsx` : `{!hologramActive && <AvatarScene/>}`) → CustomEvent émis sans écouteur et relais jamais publié. Corrigé : le **bridge** (toujours monté) publie le relais ; l'`AvatarScene` ne fait que consommer. **Leçon : un relais inter-fenêtres part d'un composant toujours monté, jamais d'une vue conditionnelle.** Preuve : `cue dispatched+published` (bridge) puis `wake word cue | hologram=true`.
+* **Réglages de cue portés côté Mobile** (protocole 18/09/2026, `wakeWord.cue` : `flashColor`/`blinkDurationMs`/`animationUrl`) : l'**animation de cue se choisit dans l'aperçu de l'avatar** (lecture à chaud + persistance), décision produit.
+* **Amélioration hors parité web** : timeout d'inactivité micro (8 s) sur une session **déclenchée par le wake word** → le micro est rendu si l'utilisateur ne dit rien. Micro manuel inchangé.
+* **Correctifs de revue (portages manqués)** : `bbf7a74` (micro relancé après un envoi texte), `941f44b` (calibration subpixel non-Go), `idleWeight` conservé (utilisé par les tests, vérification faite).
+* **Règle de portage durcie** : ajoutée à `AGENTS.md` racine + skill Electron — audit obligatoire des commits `Jarvis:`, « byte-identique » ≠ qualité, fiche dans `docs/porting/`. Tests : Electron **1116**, Mobile **246**.

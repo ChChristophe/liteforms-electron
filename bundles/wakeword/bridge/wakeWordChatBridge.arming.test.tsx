@@ -10,9 +10,14 @@ interface MockController {
   destroyed: boolean;
 }
 
-const { controllers } = vi.hoisted(() => ({
+const { controllers, publishWakeWordCue } = vi.hoisted(() => ({
   controllers: [] as Array<MockController & { start: () => Promise<void> }>,
+  publishWakeWordCue: vi.fn(),
 }));
+
+// The bridge owns the cross-window relay (the main window's AvatarScene is
+// unmounted while the hologram is active), so it must be covered here.
+vi.mock("@/lib/storage/wakeWordCueTrigger", () => ({ publishWakeWordCue }));
 
 vi.mock("../controller/wakeWordController", () => {
   class WakeWordController {
@@ -52,6 +57,7 @@ function flush(): Promise<void> {
 describe("WakeWordChatBridge arming", () => {
   beforeEach(() => {
     controllers.length = 0;
+    publishWakeWordCue.mockClear();
     useWakeWordSettingsStore.setState({ selected: null, hydrated: true });
   });
 
@@ -123,6 +129,42 @@ describe("WakeWordChatBridge arming", () => {
     expect(controllers).toHaveLength(2);
     expect(controllers[0].destroyed).toBe(true);
     expect(controllers[1].options.wakewordModels).toEqual(["alexa"]);
+  });
+
+  it("publishes the cross-window relay and the same-window event on detection", async () => {
+    const dispatched = vi.fn();
+    window.addEventListener("liteforms:wakeword-detected", dispatched);
+    render(
+      <WakeWordChatBridge
+        speechStatus="idle"
+        realtimeActive={false}
+        streaming={false}
+        requestStartMic={vi.fn()}
+        getMicrophoneStream={async () => new MediaStream()}
+      />,
+    );
+    act(() => {
+      useWakeWordSettingsStore.getState().setSelected("hey_jarvis");
+    });
+    await flush();
+
+    act(() => {
+      controllers[0].listeners.get("detected")?.({
+        label: "hey_jarvis",
+        score: 0.9,
+        timestamp: 1,
+      });
+    });
+    await flush();
+
+    expect(publishWakeWordCue).toHaveBeenCalledTimes(1);
+    expect(publishWakeWordCue).toHaveBeenCalledWith({
+      flashColor: expect.any(String),
+      blinkDurationMs: expect.any(Number),
+      animationUrl: expect.any(String),
+    });
+    expect(dispatched).toHaveBeenCalledTimes(1);
+    window.removeEventListener("liteforms:wakeword-detected", dispatched);
   });
 
   it("deselecting destroys the controller and disarms", async () => {

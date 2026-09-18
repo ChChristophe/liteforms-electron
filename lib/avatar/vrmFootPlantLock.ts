@@ -141,7 +141,7 @@ export class VrmFootPlantLock {
   private readonly debugEnabled: boolean;
   private readonly debugLogger: (event: VrmFootPlantDebugEvent) => void;
   private readonly debugSampleEveryFrames: number;
-  private readonly enabled: boolean;
+  private enabled: boolean;
   private readonly strength: number;
   private readonly maxCorrection: number;
   private readonly maxSoleDrop: number;
@@ -195,6 +195,10 @@ export class VrmFootPlantLock {
       strength: this.strength,
       type: "init"
     });
+  }
+
+  setEnabled(value: boolean): void {
+    this.enabled = value;
   }
 
   update(): void {
