@@ -24,6 +24,7 @@ import { DEFAULT_AVATAR_POSE, type AvatarPoseConfig } from "@/lib/avatar/avatarP
 import { createIndexedDbVrmRepository } from "@/lib/storage/indexedDbVrmRepository";
 import type { VrmRepository } from "@/lib/storage/vrmRepository";
 import { startPocDeviceConfigPolling, type PocApplyHooks } from "@/lib/deviceConfig/pocClient";
+import { useWakeWordSettingsStore, type WakewordModelName } from "@/bundles/wakeword";
 
 const onboardingStorageKey = "liteforms.onboardingMode";
 const bridgeConnectionPollMs = 1500;
@@ -137,7 +138,11 @@ export default function HomePage() {
         setRestoredVrmFileName(stored.fileName);
       },
       onMoodPreset: (preset) => setMood(preset),
-      onPose: (next) => setPose(next)
+      onPose: (next) => setPose(next),
+      // Device-config wake word -> bundle store; the model is already
+      // validated against the four known ids by parseDeviceConfig.
+      onWakeWord: (model) =>
+        useWakeWordSettingsStore.getState().setSelected(model as WakewordModelName | null)
     });
 
     let stopPocDeviceConfigPolling: (() => void) | undefined;

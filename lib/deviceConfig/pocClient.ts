@@ -46,6 +46,9 @@ export type PocApplyHooks = {
   onMoodPreset(preset: string | null): void;
   /** Live presentation pose hook (yaw/alcoveYaw/zoom/depth). */
   onPose(pose: AvatarPoseConfig): void;
+  /** Live wake word selection hook (null = manual microphone). Optional: an
+   * absent wakeWord block never calls it, so the local UI selection survives. */
+  onWakeWord?(model: string | null): void;
 };
 
 export type PocApplyResult = { applied: string[]; warnings: string[] };
@@ -251,6 +254,15 @@ export async function applyPocDeviceConfig(
   hooks.onPose(pose);
   savePoseConfig(pose);
   applied.push("pose");
+
+  // wakeWord -> bundle settings store via the caller's hook; the ChatPanel
+  // bridge reacts to `selected` and re-arms automatically. Only when the block
+  // was actually received: an absent block leaves the local desktop selection
+  // untouched (the phone is authoritative only about what it sends).
+  if (config.wakeWord) {
+    hooks.onWakeWord?.(config.wakeWord.model);
+    applied.push("wakeWord");
+  }
 
   // providers -> mapped session stores; the caller remounts the ChatPanel.
   const mapped = mapPocProvidersToEndpoints(config.providers);

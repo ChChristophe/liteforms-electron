@@ -8,6 +8,12 @@ import type { BaseProviderConfig, ChatMessage, LlmProviderId } from "@/lib/llm";
 import { createToolRegistry } from "@/lib/llm/toolRegistry";
 import type { TimerExpiredDetail, TimerManager } from "@/lib/timer";
 import {
+  WakeWordChatBridge,
+  WakeWordSettingsSelect,
+  useWakeWordSettingsStore,
+  WAKE_WORD_PHRASES,
+} from "@/bundles/wakeword";
+import {
   createAsrAdapter,
   createAsrRealtimeSession,
   createTtsAdapter,
@@ -105,6 +111,7 @@ const QWEN_MODEL_ID = "onnx-community/Qwen3.5-0.8B-ONNX";
 const DYNAMIC_MIC_PAUSE_MS = 1500;
 const DYNAMIC_MIC_SPEECH_GATE_MS = 250;
 const DYNAMIC_MIC_RMS_THRESHOLD = 0.015;
+const DYNAMIC_MIC_STREAK_HANGOVER_MS = 400;
 
 const localModelStorageKey = "liteforms.localModels";
 export const initialLocalModelLoadState: LocalModelLoadState[] = [
@@ -207,6 +214,9 @@ export function ChatPanel({
   );
   const [micMode, setMicMode] = useState<MicMode>("dynamic");
   const [micModeMenuOpen, setMicModeMenuOpen] = useState(false);
+  // Wake word armed (bundle bridge): exclusive voice mode, manual mic disabled.
+  const [wakeWordArmed, setWakeWordArmed] = useState(false);
+  const wakeWordSelected = useWakeWordSettingsStore((s) => s.selected);
   const [localModelLoadState, setLocalModelLoadState] = useState<LocalModelLoadState[]>(initialLocalModelLoadState);
   const [cacheUsage, setCacheUsage] = useState<CacheUsage>({
     status: "Checking cache",
@@ -720,7 +730,9 @@ export function ChatPanel({
       setMessages([...nextMessages, { role: "assistant", content: finalSanitized }]);
       setStatus("idle");
       await drainTask;
-      if (!drainFailed && micModeRef.current === "dynamic" && !usesRealtimeVoice) {
+      // Wake word armed = exclusive voice mode: never auto-restart the mic,
+      // only an explicit wake word may open the next session.
+      if (!drainFailed && micModeRef.current === "dynamic" && !usesRealtimeVoice && !wakeWordArmed) {
         await startMicRecording();
       }
     } catch (caught) {
@@ -789,6 +801,11 @@ export function ChatPanel({
     setTranscript("");
     setLastAsrDebug(`${providerLabel}: connecting...`);
     try {
+      // Web parity (28cc967): close the previous playback context before
+      // creating a new one, otherwise every realtime session leaks an
+      // AudioContext (a wake-word session per detection makes it frequent).
+      void googleLivePlaybackCtxRef.current?.close();
+      googleLivePlaybackCtxRef.current = null;
       const stream = captureMicrophone ? await getMicrophoneStream() : undefined;
 
       // Web Audio context — gapless scheduling + RMS lip sync.
@@ -898,6 +915,14 @@ export function ChatPanel({
           lipSyncActive = false;
           setSpeechError(caught.message);
           setSpeechStatus("error");
+        },
+        // Web parity (28cc967): when the realtime session closes (turn done),
+        // release it so the microphone graph stops and the UI returns to idle.
+        // Without this the session stays "listening" and keeps the mic held.
+        onEnd: () => {
+          googleLiveSessionRef.current?.stop();
+          googleLiveSessionRef.current = null;
+          setSpeechStatus("idle");
         }
       });
       googleLiveSessionRef.current = session;
@@ -948,7 +973,12 @@ export function ChatPanel({
     logDiagnostic(`timer expired label=${label} minutes=${minutes} session=${sessionPath}`);
   };
 
-  async function startMicRecording() {
+  async function startMicRecording(options?: { forceSentenceAutoSubmit?: boolean }) {
+    // Web parity (922809e): never leave a previous ASR session running.
+    const previousSession = asrSessionRef.current;
+    if (previousSession?.isActive()) {
+      void previousSession.stop().catch(() => {});
+    }
     setSpeechError("");
     setLastAsrDebug("STT: recording...");
     setTranscript("");
@@ -995,8 +1025,8 @@ export function ChatPanel({
       });
       asrSessionRef.current = session;
       session.start(stream);
-      if (micMode === "dynamic") {
-        startDynamicMicPauseDetection(stream, sessionId);
+      if (micMode === "dynamic" || options?.forceSentenceAutoSubmit === true) {
+        startDynamicMicPauseDetection(stream, sessionId, options?.forceSentenceAutoSubmit === true);
       }
       setSpeechStatus("listening");
     } catch (caught) {
@@ -1036,7 +1066,7 @@ export function ChatPanel({
     dynamicMicCleanupRef.current = null;
   }
 
-  function startDynamicMicPauseDetection(stream: MediaStream, sessionId: number) {
+  function startDynamicMicPauseDetection(stream: MediaStream, sessionId: number, forceSentenceAutoSubmit = false) {
     cleanupDynamicMicPauseDetection();
     const AudioContextCtor = globalThis.AudioContext ?? globalThis.webkitAudioContext;
     if (!AudioContextCtor) return;
@@ -1045,7 +1075,8 @@ export function ChatPanel({
     let source: MediaStreamAudioSourceNode | null = null;
     let processor: ScriptProcessorNode | null = null;
     let heardSpeech = false;
-    let speechStartedAt = 0;
+    let loudStreakStart = 0;
+    let lastLoudAt = 0;
     let lastSpeechAt = 0;
 
     const cleanup = () => {
@@ -1062,7 +1093,7 @@ export function ChatPanel({
       source = context.createMediaStreamSource(stream);
       processor = context.createScriptProcessor(2048, 1, 1);
       processor.onaudioprocess = (event) => {
-        if (micSessionIdRef.current !== sessionId || micMode !== "dynamic") return;
+        if (micSessionIdRef.current !== sessionId || (micMode !== "dynamic" && !forceSentenceAutoSubmit)) return;
         const channel = event.inputBuffer.getChannelData(0);
         let sum = 0;
         for (let index = 0; index < channel.length; index += 1) {
@@ -1071,12 +1102,19 @@ export function ChatPanel({
         const rms = Math.sqrt(sum / Math.max(1, channel.length));
         const now = Date.now();
         if (rms >= DYNAMIC_MIC_RMS_THRESHOLD) {
-          if (speechStartedAt === 0) speechStartedAt = now;
-          if (!heardSpeech && now - speechStartedAt >= DYNAMIC_MIC_SPEECH_GATE_MS) heardSpeech = true;
+          if (loudStreakStart === 0) loudStreakStart = now;
+          lastLoudAt = now;
+          if (!heardSpeech && now - loudStreakStart >= DYNAMIC_MIC_SPEECH_GATE_MS) {
+            heardSpeech = true;
+          }
           if (heardSpeech) lastSpeechAt = now;
           return;
         }
-        speechStartedAt = 0;
+        // Tolerate brief dips (consonants, inter-word gaps): only a sustained
+        // quiet period ends the streak, so the gate does not restart forever.
+        if (loudStreakStart !== 0 && now - lastLoudAt > DYNAMIC_MIC_STREAK_HANGOVER_MS) {
+          loudStreakStart = 0;
+        }
         if (heardSpeech && now - lastSpeechAt >= DYNAMIC_MIC_PAUSE_MS && asrSessionRef.current?.isActive()) {
           stopMicRecording();
         }
@@ -1307,6 +1345,8 @@ export function ChatPanel({
           <details className="advanced-section">
             <summary>Advanced</summary>
             <div className="advanced-body">
+              {/* Bundle slot (ARCHITECTURE_BUNDLE.md §4.4 / plan §22): wake word selection, persisted */}
+              <WakeWordSettingsSelect />
               <div className="local-model-progress">
                 <div className="cache-row">
                   <span>Local models</span>
@@ -1402,7 +1442,7 @@ export function ChatPanel({
             onClick={handleMicClick}
             onPointerUp={() => { if (!isActiveRealtimeVoiceConfig(realtimeVoiceConfig) && micMode === "hold") stopMicRecording(); }}
             onPointerLeave={() => { if (!isActiveRealtimeVoiceConfig(realtimeVoiceConfig) && micMode === "hold" && speechStatus === "listening") stopMicRecording(); }}
-            disabled={status === "streaming" || speechStatus === "transcribing" || speechStatus === "testing" || speechStatus === "speaking"}
+            disabled={status === "streaming" || speechStatus === "transcribing" || speechStatus === "testing" || speechStatus === "speaking" || wakeWordArmed}
           >
             <span style={{ fontSize: "16px", lineHeight: 1 }}>{speechStatus === "listening" ? "◉" : "🎙"}</span>
             <span style={{ fontSize: "9px", letterSpacing: "0.06em", lineHeight: 1, fontFamily: "var(--font-mono, monospace)" }}>
@@ -1418,7 +1458,7 @@ export function ChatPanel({
                 aria-haspopup="menu"
                 aria-expanded={micModeMenuOpen}
                 onClick={() => setMicModeMenuOpen((open) => !open)}
-                disabled={speechStatus === "listening" || speechStatus === "transcribing"}
+                disabled={speechStatus === "listening" || speechStatus === "transcribing" || wakeWordArmed}
               >
                 <span aria-hidden="true" />
               </button>
@@ -1444,6 +1484,29 @@ export function ChatPanel({
           {status === "streaming" ? "…" : "Send"}
         </button>
       </form>
+      {wakeWordArmed && wakeWordSelected ? (
+        <p className="provider-note" style={{ margin: "4px 20px 0" }}>
+          Wake word active: “{WAKE_WORD_PHRASES[wakeWordSelected]}” — say it to talk. Manual microphone disabled.
+        </p>
+      ) : null}
+      {/* Bundle slot (ARCHITECTURE_BUNDLE.md §4.4 / plan §22 derogation): wake word */}
+      <WakeWordChatBridge
+        requestStartMic={(o) => {
+              // Web parity: a realtime voice provider owns speech in/out, so the
+              // wake word opens the realtime session (mic capture) instead of
+              // the separate ASR flow. Non-realtime keeps the STT auto-submit path.
+              if (isActiveRealtimeVoiceConfig(realtimeVoiceConfig)) {
+                void startRealtimeVoiceSession({ captureMicrophone: true });
+              } else {
+                void startMicRecording(o);
+              }
+            }}
+        getMicrophoneStream={getMicrophoneStream}
+        speechStatus={speechStatus}
+        realtimeActive={isActiveRealtimeVoiceConfig(realtimeVoiceConfig)}
+        streaming={status === "streaming"}
+        onArmedChange={setWakeWordArmed}
+      />
     </aside>
   );
 }

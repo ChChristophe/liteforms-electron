@@ -881,4 +881,14 @@ mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4
 * **Tranche 1 (faite, validée)** : bundle autonome `bundles/wakeword/` (moteur ORT + controller + store zustand + hook + panneau POC), page `/poc-wakeword`, assets self-hostés (`public/models/wakeword/` 6 `.onnx`, `public/ort/ort-wasm-simd-threaded.{mjs,wasm}`, `public/worklets/pcm-worklet.js`), `features.json` + `lib/core/featureFlags.ts`. Port fidèle de la référence web (`bundles/wakeword/`, plan `Plan d'implémentation.md`), 1036 tests verts, `/poc-wakeword` compilé et packagé. **Détection « Hey Jarvis » validée par l'utilisateur** (Chrome sur le serveur packagé).
 * **Correction au passage** : §6.4 — COOP/COEP déjà en place, ORT threaded self-hosté réutilisé, aucune chasse au build single-thread.
 * **Reste** : tranche 3 = intégration ChatPanel (bridge, **un seul** `getUserMedia` partagé, mode exclusif, STT auto sur détection, réglage « Wake word » persistant) ; tranche 4 = cue alcôve + greeting adapté à l'animator Electron (`VrmRuntimeAnimator`, pas d'`idleChoreographer`).
-* **Note** : portage mono-repo — la référence web n'a pas été modifiée.
+* **Note** : la référence web n'a pas été modifiée.
+
+---
+
+## 16. Post-mortem — wake word phase 2 : intégration + config Mobile (18/09/2026, validé terrain)
+
+* **Fait (bundle)** : `bundles/wakeword/` complété — bridge ChatPanel, storage `liteforms.wakewordConfig`, store de sélection, `WakeWordSettingsSelect`, `lib/avatar/wakeWordCue.ts`. Fichiers **byte-identiques** à la web sauf `index.ts`/README/page POC adaptés. Un seul `getUserMedia` partagé, mode exclusif (micro manuel grisé), STT auto (`forceSentenceAutoSubmit`), gate `shouldTriggerVoiceSession`, pause/reset du contrôleur pendant les sessions.
+* **Fait (config Mobile = source de vérité)** : `POST /api/device-config` porte un bloc `wakeWord {model}` (protocole 18/09/2026) ; l'appliance l'applique au store (bridge ré-armé) et garde sa sélection locale si le bloc est absent. Côté Mobile : écran `wake-word`, catalogue statique, champ `DeviceConfig.wakeWord`, section au récapitulatif.
+* **Incidents (portages manqués, corrigés)** : (1) handler `onEnd` de la session realtime (web `28cc967`) non porté → **le micro n'était jamais rendu** après le wake word, statut bloqué « listening » ; (2) `close()` du playback AudioContext au démarrage d'une session non porté → fuite d'un AudioContext par session ; (3) stop de la session ASR précédente (web `922809e`).
+* **Réglage** : VAD serveur OpenAI `silence_duration_ms: 800` finit le tour utilisateur ; le micro est rendu à `response.done`.
+* **Reste** : cue visuelle (#16/#17) — `wakeWordCue.ts` porté mais **non consommé** ; manquent le câblage `AvatarScene` et un `playClipNow` adapté à `VrmIdleAnimator` (Electron n'a pas d'`idleChoreographer`).

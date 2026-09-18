@@ -27,6 +27,15 @@ export type PocModelRef = {
   hash: string | null;
 };
 
+// ponytail: local mirror of bundles/wakeword/engine/modelsRegistry.ts
+// (PRETRAINED_MODELS) — lib/ must not import bundles/; keep the two in sync.
+export const WAKEWORD_MODEL_IDS = ["hey_jarvis", "alexa", "hey_mycroft", "hey_rhasspy"] as const;
+export type WakewordModelId = (typeof WAKEWORD_MODEL_IDS)[number];
+
+export type PocWakeWordConfig = {
+  model: WakewordModelId | null;
+};
+
 export type PocDeviceConfig = {
   configVersion: "1.0";
   character: PocCharacterConfig;
@@ -44,6 +53,10 @@ export type PocDeviceConfig = {
     tts: PocProviderConfig;
     stt: PocProviderConfig;
   };
+  /** Optional wake word block (protocol 18/09/2026). Omitted when the Mobile
+   * did not send one: the appliance then keeps its own local desktop
+   * selection. A block with `model: null` means "manual microphone". */
+  wakeWord?: PocWakeWordConfig;
 };
 
 type PocProviderConfig = {
@@ -112,6 +125,23 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
       warnings.push(`avatar.mood \`${String(rawMood)}\` ignored (unknown preset)`);
     }
   }
+  // wakeWord: additive optional block (protocol §Bloc `wakeWord`). Absent =
+  // key omitted so the appliance's local desktop selection survives; an
+  // unknown model is ignored with a warning (never a 400) and resolves to
+  // null (manual microphone), like avatar.mood.
+  let wakeWord: PocWakeWordConfig | undefined;
+  const rawWakeWord = body.wakeWord;
+  if (typeof rawWakeWord === "object" && rawWakeWord !== null) {
+    const rawModel = (rawWakeWord as Record<string, unknown>).model;
+    if (rawModel === undefined || rawModel === null) {
+      wakeWord = { model: null };
+    } else if (typeof rawModel === "string" && (WAKEWORD_MODEL_IDS as readonly string[]).includes(rawModel)) {
+      wakeWord = { model: rawModel as WakewordModelId };
+    } else {
+      warnings.push(`wakeWord.model \`${String(rawModel)}\` ignoré (inconnu)`);
+      wakeWord = { model: null };
+    }
+  }
   return {
     warnings,
     config: {
@@ -123,7 +153,8 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
         pose
       },
       environment,
-      providers
+      providers,
+      ...(wakeWord !== undefined ? { wakeWord } : {})
     }
   };
 }
@@ -209,11 +240,13 @@ export function describeConfigSummary(config: {
   character: { name: string; pronouns: string };
   avatar: { mood?: string; modelRef?: { id: string; fileName: string } | null; pose?: AvatarPoseConfig | null };
   providers: { llm: { provider: string }; tts: { provider: string }; stt: { provider: string } };
+  wakeWord?: { model: string | null };
 }): string {
   const slots = ["llm", "tts", "stt"] as const;
   return `character.name set=${config.character.name.length > 0} pronouns=${config.character.pronouns} ` +
     `mood=${config.avatar.mood !== undefined ? "present" : "absent"} ` +
     `modelRef=${config.avatar.modelRef ? config.avatar.modelRef.fileName : "none"} ` +
     `pose=${config.avatar.pose ? "present" : "none"} ` +
+    `wakeWord=${config.wakeWord ? config.wakeWord.model ?? "none" : "absent"} ` +
     `providers=${slots.map((slot) => `${slot}:${config.providers[slot].provider}`).join(" ")}`;
 }

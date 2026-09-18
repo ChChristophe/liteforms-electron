@@ -126,3 +126,50 @@ describe("parseDeviceConfig avatar.pose validation", () => {
     expect(result.warnings.join(" ")).not.toMatch(/not applied/i);
   });
 });
+
+describe("parseDeviceConfig wakeWord validation (protocol 18/09/2026)", () => {
+  function parseWakeWord(wakeWord: unknown) {
+    return parseDeviceConfig({ ...withAvatar({}), wakeWord }) as
+      | { config: PocDeviceConfig; warnings: string[] }
+      | { error: string; message: string };
+  }
+
+  it("absent block: default null, key omitted, no warning", () => {
+    const result = parseDeviceConfig(withAvatar({})) as { config: PocDeviceConfig; warnings: string[] };
+
+    expect(result.config.wakeWord?.model ?? null).toBeNull();
+    // Omitted (not an injected {model:null}) so a config roundtrip and the
+    // "absent = leave the local desktop selection" apply rule both hold.
+    expect(result.config.wakeWord).toBeUndefined();
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("accepts each of the four known model ids without a warning", () => {
+    for (const model of ["hey_jarvis", "alexa", "hey_mycroft", "hey_rhasspy"] as const) {
+      const result = parseWakeWord({ model }) as { config: PocDeviceConfig; warnings: string[] };
+      expect(result.config.wakeWord).toEqual({ model });
+      expect(result.warnings).toEqual([]);
+    }
+  });
+
+  it("accepts model null (manual microphone) without a warning", () => {
+    const result = parseWakeWord({ model: null }) as { config: PocDeviceConfig; warnings: string[] };
+
+    expect(result.config.wakeWord).toEqual({ model: null });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("warns and resolves an unknown model to null instead of failing", () => {
+    const result = parseWakeWord({ model: "computer" }) as { config: PocDeviceConfig; warnings: string[] };
+
+    expect(result.config.wakeWord).toEqual({ model: null });
+    expect(result.warnings).toEqual(["wakeWord.model `computer` ignoré (inconnu)"]);
+  });
+
+  it("warns and resolves a non-string model to null instead of failing", () => {
+    const result = parseWakeWord({ model: 42 }) as { config: PocDeviceConfig; warnings: string[] };
+
+    expect(result.config.wakeWord).toEqual({ model: null });
+    expect(result.warnings).toEqual(["wakeWord.model `42` ignoré (inconnu)"]);
+  });
+});

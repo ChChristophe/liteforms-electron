@@ -52,12 +52,14 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
   models: StoredVrm[];
   moods: (string | null)[];
   poses: AvatarPoseConfig[];
+  wakeWords: (string | null)[];
 } {
   const characters: object[] = [];
   const sessions: object[] = [];
   const models: StoredVrm[] = [];
   const moods: (string | null)[] = [];
   const poses: AvatarPoseConfig[] = [];
+  const wakeWords: (string | null)[] = [];
   const vrm: StoredVrm = { arrayBuffer: new ArrayBuffer(1), fileName: "lobsterEdit.vrm" };
   const repo: VrmRepository = {
     load: () => Promise.resolve(vrm),
@@ -70,6 +72,7 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
     models,
     moods,
     poses,
+    wakeWords,
     hooks: {
       setCharacter: (c) => characters.push(c),
       onSessionConfig: (s) => sessions.push(s),
@@ -77,6 +80,7 @@ function createHooks(overrides?: Partial<PocApplyHooks>): {
       getVrmRepository: () => repo,
       onMoodPreset: (m) => moods.push(m),
       onPose: (p) => poses.push(p),
+      onWakeWord: (m) => wakeWords.push(m),
       ...overrides
     }
   };
@@ -379,5 +383,39 @@ describe("localStorage key rename (liteforms.poc.deviceConfig -> liteforms.devic
     expect(store[LEGACY_DEVICE_CONFIG_KEY]).toBeUndefined();
     // Second read goes through the new key only.
     expect(readStoredPocDeviceConfig()?.receivedAt).toBe("r-legacy");
+  });
+});
+
+describe("wakeWord from device-config (protocol 18/09/2026)", () => {
+  it("calls onWakeWord with the selected model and marks the block applied", async () => {
+    const { hooks, wakeWords } = createHooks();
+
+    const result = await applyPocDeviceConfig(
+      { ...validPayload, receivedAt: "r-wake", wakeWord: { model: "hey_jarvis" } },
+      hooks
+    );
+
+    expect(result.applied).toContain("wakeWord");
+    expect(wakeWords).toEqual(["hey_jarvis"]);
+  });
+
+  it("calls onWakeWord with null when the block disables the wake word", async () => {
+    const { hooks, wakeWords } = createHooks();
+
+    await applyPocDeviceConfig(
+      { ...validPayload, receivedAt: "r-wake-null", wakeWord: { model: null } },
+      hooks
+    );
+
+    expect(wakeWords).toEqual([null]);
+  });
+
+  it("does not call onWakeWord when the block is absent (local selection survives)", async () => {
+    const { hooks, wakeWords } = createHooks();
+
+    const result = await applyPocDeviceConfig({ ...validPayload, receivedAt: "r-wake-absent" }, hooks);
+
+    expect(wakeWords).toEqual([]);
+    expect(result.applied).not.toContain("wakeWord");
   });
 });

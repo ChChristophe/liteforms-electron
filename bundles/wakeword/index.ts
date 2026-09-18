@@ -1,15 +1,32 @@
 export { WakeWordPocPanel } from "./components/WakeWordPocPanel";
+export { WakeWordSettingsSelect } from "./components/WakeWordSettingsSelect";
 export { useWakeWord } from "./hooks/useWakeWord";
 export { WakeWordController } from "./controller/wakeWordController";
+export {
+  WAKE_WORD_DETECTED_EVENT,
+  dispatchWakeWordDetected,
+} from "./bridge/wakeWordEvents";
+export {
+  WakeWordChatBridge,
+  shouldTriggerVoiceSession,
+} from "./bridge/wakeWordChatBridge";
 export {
   PRETRAINED_MODELS,
   WAKE_WORD_PHRASES,
 } from "./engine/modelsRegistry";
 export type { WakewordModelName } from "./engine/modelsRegistry";
+export {
+  clearWakeWordConfig,
+  loadWakeWordConfig,
+  saveWakeWordConfig,
+  WAKE_WORD_CONFIG_KEY,
+} from "./storage/wakeWordConfig";
+export { useWakeWordSettingsStore } from "./store/wakeWordSettingsStore";
 export { useWakeWordStore } from "./store/wakeWordStore";
 export { WakeWordError } from "./types";
 export type {
   WakeWordControllerOptions,
+  WakeWordCueConfig,
   WakeWordDetectedEvent,
   WakeWordErrorCode,
   WakeWordEventMap,
