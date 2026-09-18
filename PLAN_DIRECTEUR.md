@@ -647,10 +647,10 @@ recovery : bouton physique §6.7.
 - Bound du service au **LAN** (pas d'exposition WAN), port dédié.
 - `fs.watch` sur `userData` OK (Windows) ; sinon polling 2 s.
 
-### 6.4 Threading `onnxruntime-web` (wake word)
-- En Electron, la page servie par le serveur Next local n'a **pas de cross-origin isolation** (COOP/COEP absents) → **`SharedArrayBuffer` indisponible** → les builds `*-threaded.wasm` d'onnxruntime **échouent**.
-- **Solution recommandée** : utiliser le build **single-thread** (`ort-wasm-simd`) — inference 30–80 ms, sans impact perceptible pour un wake word. Évite d'ajouter COOP/COEP (qui restreint d'autres ressources locales).
-- Alternative (plus de travail) : ajouter COOP/COEP sur le serveur Next local et garder le threaded.
+### 6.4 Threading `onnxruntime-web` (wake word) — **corrigé le 18/09/2026**
+- ~~En Electron, le serveur Next local n'a pas de cross-origin isolation → threaded wasm HS.~~ **FAUX** : `next.config.ts` envoie déjà `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp` (ajoutés pour WebXR/SharedArrayBuffer). Vérifié le 18/09 en interrogeant le serveur standalone packagé (`release\win-unpacked\...\server.js`) : les deux en-têtes sont bien présents → **`crossOriginIsolated === true`** dans le renderer.
+- **Décision** : réutiliser tel quel le setup ORT de la référence web — import dynamique `onnxruntime-web/wasm`, artefacts self-hostés `public/ort/ort-wasm-simd-threaded.{mjs,wasm}`, `ort.env.wasm.wasmPaths = "/ort/"`, `numThreads: 1` (déterminisme ; threads multiples possibles puisque isolé). **Pas** de build single-thread à chercher.
+- Le reste du §6.4 (inference ~0,25 ms/frame côté node, budget 80 ms) reste valable.
 
 ### 6.5 Micro du wake word
 - `getUserMedia` fonctionne en Electron **sans popup** la plupart du temps (page de confiance).
@@ -873,3 +873,12 @@ mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4
 * **Contrat** : `protocol/DEVICE_API.md` §`POST /api/device-config`, encadré « Providers realtime (18/09/2026) » (`llm.voiceId` = voix realtime ; `tts`/`stt` ignorés).
 * **Validé terrain (Windows, win-unpacked)** : config realtime poussée sans TTS/STT, voix **alloy** appliquée, outils voix heure/date/calcul/timers OK (confirmation utilisateur ; logs outillés désormais disponibles pour audit).
 * **Reste / différé** : mismatch latent `endpoint: null` (le type Mobile l'autorise, `isProviders` Electron exige une string) — non déclenché tant que l'endpoint n'est pas vidé. **Leçon** : pour un portage, vérifier que la donnée **arrive ET est consommée** côté cible, pas seulement qu'elle est envoyée.
+
+---
+
+## 15. Portage wake word « Hey Jarvis » (OpenWakeWord) — phase 1 validée terrain (18/09/2026)
+
+* **Tranche 1 (faite, validée)** : bundle autonome `bundles/wakeword/` (moteur ORT + controller + store zustand + hook + panneau POC), page `/poc-wakeword`, assets self-hostés (`public/models/wakeword/` 6 `.onnx`, `public/ort/ort-wasm-simd-threaded.{mjs,wasm}`, `public/worklets/pcm-worklet.js`), `features.json` + `lib/core/featureFlags.ts`. Port fidèle de la référence web (`bundles/wakeword/`, plan `Plan d'implémentation.md`), 1036 tests verts, `/poc-wakeword` compilé et packagé. **Détection « Hey Jarvis » validée par l'utilisateur** (Chrome sur le serveur packagé).
+* **Correction au passage** : §6.4 — COOP/COEP déjà en place, ORT threaded self-hosté réutilisé, aucune chasse au build single-thread.
+* **Reste** : tranche 3 = intégration ChatPanel (bridge, **un seul** `getUserMedia` partagé, mode exclusif, STT auto sur détection, réglage « Wake word » persistant) ; tranche 4 = cue alcôve + greeting adapté à l'animator Electron (`VrmRuntimeAnimator`, pas d'`idleChoreographer`).
+* **Note** : portage mono-repo — la référence web n'a pas été modifiée.
