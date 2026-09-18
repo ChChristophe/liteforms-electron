@@ -863,3 +863,13 @@ mcli shared donne 10.42.0.1 par defaut), verification post-hotspot (actif + IPv4
 
 * Validation terrain ci-dessus, puis ajustement éventuel de la granularité des commits.
 * Tests Electron **1005** / Mobile **186**, `tsc`/lint/build OK — mais **zéro validation terrain** à ce stade (l'utilisateur ne peut pas tout tester ce soir).
+
+---
+
+## 14. Post-mortem — parité providers realtime + voix Mobile (18/09/2026, validé terrain)
+
+* **Fait (Mobile)** : l'écran providers **effondre TTS/STT** quand le LLM est realtime (`openai-realtime`/`google-live`) — seuls provider/modèle/voix/endpoint/clé restent (parité web `OnboardingModal`) ; la revue affiche « Inclus dans <label> », la gate d'envoi ignore TTS/STT, et les slots restés `none` partent remplis des défauts web (`kokoro`/`distil-whisper`, sans clé) pour respecter le contrat wire à trois slots ; les clés proposées sont limitées au LLM.
+* **Fait (Electron)** : `mapPocProvidersToEndpoints` applique désormais `providers.llm.model` **et `providers.llm.voiceId`** à `realtimeVoice` (la voix choisie sur le Mobile traversait le contrat mais était **jetée au mapping** → l'appliance jouait `coral`/`Kore` en dur, c'est le bug entendu) ; instrumentation diag des appels d'outils (`realtime tool-call/tool-result/tool-error`) et des expirations (`timer expired … session=…`) ; log trompeur `live-audio forwarded bytes=0` corrigé (artefact du transfert `postMessage(..., [bytes])`, taille capturée avant envoi).
+* **Contrat** : `protocol/DEVICE_API.md` §`POST /api/device-config`, encadré « Providers realtime (18/09/2026) » (`llm.voiceId` = voix realtime ; `tts`/`stt` ignorés).
+* **Validé terrain (Windows, win-unpacked)** : config realtime poussée sans TTS/STT, voix **alloy** appliquée, outils voix heure/date/calcul/timers OK (confirmation utilisateur ; logs outillés désormais disponibles pour audit).
+* **Reste / différé** : mismatch latent `endpoint: null` (le type Mobile l'autorise, `isProviders` Electron exige une string) — non déclenché tant que l'endpoint n'est pas vidé. **Leçon** : pour un portage, vérifier que la donnée **arrive ET est consommée** côté cible, pas seulement qu'elle est envoyée.

@@ -8,7 +8,7 @@ import {
   type PocApplyHooks,
 } from "./pocClient";
 import { loadCharacterConfig } from "@/lib/storage/characterConfig";
-import { loadSessionConfig } from "@/lib/storage/sessionConfig";
+import { loadSessionConfig, saveSessionConfig } from "@/lib/storage/sessionConfig";
 import { loadMoodConfig } from "@/lib/storage/moodConfig";
 import { loadPoseConfig } from "@/lib/storage/poseConfig";
 import type { AvatarPoseConfig } from "@/lib/avatar/avatarPose";
@@ -258,6 +258,81 @@ describe("POC renderer apply (Phase B §12.2)", () => {
 
     expect(result.warnings.join(" ")).toMatch(/unknown provider id/);
     expect(sessions).toHaveLength(0);
+  });
+});
+
+describe("realtime voice from device-config (protocol 18/09/2026)", () => {
+  const realtimePayload = (provider: "openai-realtime" | "google-live", voiceId: string | null, model = "realtime-model") => ({
+    ...validPayload,
+    receivedAt: "r-realtime",
+    providers: {
+      ...validPayload.providers,
+      llm: { provider, model, endpoint: "wss://realtime.example/ws", voiceId }
+    }
+  });
+
+  it("builds realtimeVoice with the model and voice chosen on the Mobile", async () => {
+    const { hooks } = createHooks();
+
+    const result = await applyPocDeviceConfig(realtimePayload("openai-realtime", "marin"), hooks);
+
+    expect(result.applied).toContain("providers");
+    expect(loadSessionConfig()?.realtimeVoice).toMatchObject({
+      provider: "openai-realtime",
+      model: "realtime-model",
+      voice: "marin",
+      websocketUrl: "wss://realtime.example/ws"
+    });
+  });
+
+  it("falls back to the provider default voice when voiceId is null", async () => {
+    const { hooks } = createHooks();
+
+    await applyPocDeviceConfig(realtimePayload("google-live", null, "gemini-live"), hooks);
+
+    expect(loadSessionConfig()?.realtimeVoice).toMatchObject({
+      provider: "google-live",
+      model: "gemini-live",
+      voice: "Kore"
+    });
+  });
+
+  it("preserves a local credential but never takes one from device-config", async () => {
+    saveSessionConfig({
+      llm: { provider: "openai-realtime", model: "old", baseUrl: "wss://old" },
+      tts: { provider: "kokoro" },
+      asr: { provider: "distil-whisper" },
+      realtimeVoice: { provider: "openai-realtime", credential: "sk-local", model: "old", voice: "old" }
+    });
+    const { hooks } = createHooks();
+
+    await applyPocDeviceConfig(realtimePayload("openai-realtime", "marin"), hooks);
+
+    expect(loadSessionConfig()?.realtimeVoice).toMatchObject({
+      provider: "openai-realtime",
+      credential: "sk-local",
+      model: "realtime-model",
+      voice: "marin"
+    });
+  });
+
+  it("keeps the previous realtime voice untouched when llm is not realtime", async () => {
+    saveSessionConfig({
+      llm: { provider: "openai", model: "gpt-5.5", baseUrl: "https://api.openai.com/v1" },
+      tts: { provider: "kokoro" },
+      asr: { provider: "distil-whisper" },
+      realtimeVoice: { provider: "google-live", credential: "google-key", model: "gemini-live", voice: "Kore" }
+    });
+    const { hooks } = createHooks();
+
+    await applyPocDeviceConfig({ ...validPayload, receivedAt: "r-nonrealtime" }, hooks);
+
+    expect(loadSessionConfig()?.realtimeVoice).toEqual({
+      provider: "google-live",
+      credential: "google-key",
+      model: "gemini-live",
+      voice: "Kore"
+    });
   });
 });
 

@@ -213,6 +213,7 @@ export function useHologramBridge() {
   const handleTtsResult = useCallback((result: TtsResult): boolean => {
     const win = holoWinRef.current;
     if (!win || win.closed) return false;
+    const byteLength = result.audio.byteLength;
     if (!sendMessage(win, {
       origin: hologramMessageOrigin,
       kind: "utter-bytes",
@@ -226,7 +227,7 @@ export function useHologramBridge() {
       },
       bytes: result.audio,
     })) return false;
-    logDiagnostic(`holo-bridge utter forwarded mime=${result.mimeType} bytes=${result.audio.byteLength}`);
+    logDiagnostic(`holo-bridge utter forwarded mime=${result.mimeType} bytes=${byteLength}`);
     return true;
   }, [sendMessage]);
 
@@ -235,8 +236,9 @@ export function useHologramBridge() {
     if (!win || win.closed) return false;
     try {
       const bytes = await blob.arrayBuffer();
+      const byteLength = bytes.byteLength;
       if (!sendMessage(win, { origin: hologramMessageOrigin, kind: "live-audio", bytes })) return false;
-      logDiagnostic(`holo-bridge live-audio forwarded bytes=${bytes.byteLength}`);
+      logDiagnostic(`holo-bridge live-audio forwarded bytes=${byteLength}`);
       return true;
     } catch (err) {
       logDiagnostic(`holo-bridge live-audio forward error ${String(err)}`);
@@ -255,13 +257,14 @@ export function useHologramBridge() {
       logDiagnostic(`holo-bridge updateModel resolve-failed url=${modelUrl ?? "-"}`);
       return false;
     }
+    const byteLength = "url" in shareable ? 0 : shareable.bytes.byteLength;
     const sent = "url" in shareable
       ? sendMessage(win, { origin: hologramMessageOrigin, kind: "model-url", url: shareable.url })
       : sendMessage(win, { origin: hologramMessageOrigin, kind: "model-bytes", bytes: shareable.bytes });
     logDiagnostic(
       "url" in shareable
         ? `holo-bridge updateModel model-url url=${shareable.url} sent=${sent}`
-        : `holo-bridge updateModel model-bytes bytes=${shareable.bytes.byteLength} sent=${sent}`
+        : `holo-bridge updateModel model-bytes bytes=${byteLength} sent=${sent}`
     );
     return sent;
   }, [sendMessage]);

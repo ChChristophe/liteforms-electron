@@ -11,7 +11,8 @@ import type { AvatarPoseConfig } from "@/lib/avatar/avatarPose";
 
 export type PocSessionConfig = Omit<SessionConfig, "version">;
 import type { BaseProviderConfig, LlmProviderId } from "@/lib/llm";
-import type { AsrConfig, AsrProviderId, TtsConfig, TtsProviderId } from "@/lib/speech";
+import { LLM_PROVIDER_OPTIONS } from "@/lib/llm/providerOptions";
+import type { AsrConfig, AsrProviderId, RealtimeVoiceConfig, TtsConfig, TtsProviderId } from "@/lib/speech";
 import type { StoredVrm, VrmRepository } from "@/lib/storage/vrmRepository";
 import type { CharacterConfig } from "@/components/chat/ChatPanel";
 
@@ -117,6 +118,20 @@ const ASR_PROVIDER_IDS: ReadonlySet<string> = new Set([
   "distil-whisper", "deepgram", "elevenlabs", "openai", "xai", "mistral"
 ]);
 
+// Mirror of components/chat/ChatPanel.tsx (lib/ must not import components/).
+function isRealtimeVoiceProvider(provider: string): provider is "google-live" | "openai-realtime" {
+  return provider === "google-live" || provider === "openai-realtime";
+}
+
+/** Default realtime voice from the shared provider catalog (same source the
+ * onboarding/configure UI uses), with the historical pair as a last resort. */
+function defaultRealtimeVoice(provider: "google-live" | "openai-realtime"): string {
+  return (
+    LLM_PROVIDER_OPTIONS.find((option) => option.id === provider)?.defaultVoice ??
+    (provider === "google-live" ? "Kore" : "coral")
+  );
+}
+
 /** Providers -> existing SessionConfig stores (stt->asr, endpoint->baseUrl, voiceId->voice). */
 export function mapPocProvidersToEndpoints(
   providers: PocDeviceConfig["providers"]
@@ -152,14 +167,35 @@ export function mapPocProvidersToEndpoints(
     baseUrl: providers.stt.endpoint
   } as AsrConfig;
 
-  // Preserve the local realtime voice: it never travels in device-config.
+  // Realtime llm: the chosen model AND voice travel in device-config
+  // (providers.llm.model / providers.llm.voiceId — protocol §POST
+  // /api/device-config, box "Providers realtime (18/09/2026)"). The credential
+  // never travels there; only a locally known credential is preserved
+  // (resolved at the call site by ChatPanel's resolveProviderCredential).
+  // Non-realtime llm: the local realtime voice is preserved untouched.
   const previous = loadSessionConfig();
+  const previousRealtime = previous?.realtimeVoice;
+  let realtimeVoice: RealtimeVoiceConfig | undefined;
+  if (isRealtimeVoiceProvider(llm.provider)) {
+    const credential =
+      previousRealtime && "credential" in previousRealtime ? previousRealtime.credential : undefined;
+    realtimeVoice = {
+      provider: llm.provider,
+      ...(credential ? { credential } : {}),
+      model: providers.llm.model,
+      voice: providers.llm.voiceId ?? defaultRealtimeVoice(llm.provider),
+      websocketUrl: providers.llm.endpoint
+    } as RealtimeVoiceConfig;
+  } else {
+    realtimeVoice = previousRealtime;
+  }
+
   return {
     session: {
       llm,
       tts,
       asr,
-      ...(previous?.realtimeVoice ? { realtimeVoice: previous.realtimeVoice } : {})
+      ...(realtimeVoice ? { realtimeVoice } : {})
     },
     warnings
   };

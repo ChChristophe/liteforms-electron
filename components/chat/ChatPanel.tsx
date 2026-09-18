@@ -28,6 +28,7 @@ import type { GoogleLiveBrowserSession, OpenAiRealtimeBrowserSession, RealtimeVo
 import { DistilWhisperWorkerClient, KokoroWorkerClient } from "@/lib/speech/workerClient";
 import type { AsrConfig, AsrRealtimeSession, TtsConfig } from "@/lib/speech";
 import { dispatchAvatarLipSyncFrame } from "@/lib/avatar/lipSyncEvents";
+import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
 import { ensureCredential, resolveProviderCredential } from "@/lib/credential/credentialBridge";
 import {
   capPreloadUiProgress,
@@ -879,17 +880,21 @@ export function ChatPanel({
         },
         onFunctionCall: async (id, name, args) => {
           setLastAsrDebug(`${providerLabel}: function_call → ${name}`);
+          logDiagnostic(`realtime tool-call name=${name} args=${args.slice(0, 120)}`);
           try {
             const result = await toolRegistry.execute(name, args);
+            logDiagnostic(`realtime tool-result name=${name} result=${result.slice(0, 160)}`);
             session.sendFunctionCallOutput(id, result);
             session.createResponse();
           } catch (err) {
+            logDiagnostic(`realtime tool-error name=${name} err=${err instanceof Error ? err.message : String(err)}`);
             setLastAsrDebug(`${providerLabel}: function_call error → ${err}`);
             session.sendFunctionCallOutput(id, "Error executing function");
             session.createResponse();
           }
         },
         onError: (caught) => {
+          logDiagnostic(`realtime session error provider=${providerLabel} message=${caught.message}`);
           lipSyncActive = false;
           setSpeechError(caught.message);
           setSpeechStatus("error");
@@ -922,21 +927,25 @@ export function ChatPanel({
     // If a realtime voice session is active, push through it for vocal announcement.
     const session = googleLiveSessionRef.current;
     if (session?.isActive()) {
+      logDiagnostic(`timer expired label=${label} minutes=${minutes} session=active`);
       session.sendText(notificationText);
       return;
     }
 
     // Otherwise, open a new Realtime session and send the notification (like a text message).
+    let sessionPath = "none";
     if (isActiveRealtimeVoiceConfig(realtimeVoiceConfig) || isRealtimeVoiceProvider(config.provider)) {
       try {
         const activeSession = await startRealtimeVoiceSession({ captureMicrophone: false });
         if (activeSession?.isActive()) {
+          sessionPath = "new";
           activeSession.sendText(notificationText);
         }
       } catch (err) {
         console.warn("[ChatPanel] Timer notification Realtime session failed", err);
       }
     }
+    logDiagnostic(`timer expired label=${label} minutes=${minutes} session=${sessionPath}`);
   };
 
   async function startMicRecording() {
