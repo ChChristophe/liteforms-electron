@@ -236,9 +236,7 @@ export function useHologramBridge() {
     if (!win || win.closed) return false;
     try {
       const bytes = await blob.arrayBuffer();
-      const byteLength = bytes.byteLength;
       if (!sendMessage(win, { origin: hologramMessageOrigin, kind: "live-audio", bytes })) return false;
-      logDiagnostic(`holo-bridge live-audio forwarded bytes=${byteLength}`);
       return true;
     } catch (err) {
       logDiagnostic(`holo-bridge live-audio forward error ${String(err)}`);

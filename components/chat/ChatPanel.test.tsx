@@ -364,7 +364,7 @@ describe("ChatPanel OpenClaw persona handling", () => {
     expect(screen.getByPlaceholderText("Character name")).toBeInTheDocument();
   });
 
-  it("hides OpenClaw token and setup command in chat settings", () => {
+  it("shows the OpenClaw Gateway token field even when OpenClaw is the LLM provider", () => {
     renderPanelWithConfig({
       initialLlmConfig: {
         provider: "openclaw",
@@ -376,9 +376,51 @@ describe("ChatPanel OpenClaw persona handling", () => {
     });
 
     expect(screen.getByRole("group", { name: "Model provider" })).toHaveTextContent("OpenClaw Gateway");
-    expect(screen.queryByLabelText("OpenClaw Gateway token")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("OpenClaw Gateway token")).toBeInTheDocument();
     expect(screen.queryByText(/OpenClaw setup/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /copy openclaw setup command/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the OpenClaw Gateway token field with a non-OpenClaw (realtime) provider", () => {
+    renderPanelWithConfig({
+      initialRealtimeVoiceConfig: {
+        provider: "openai-realtime",
+        credential: "sk-test",
+        model: "gpt-realtime-2",
+        voice: "coral"
+      }
+    });
+
+    expect(screen.getByLabelText("OpenClaw Gateway token")).toBeInTheDocument();
+  });
+
+  it("writes a typed OpenClaw token to the credential store", () => {
+    const credentials = {
+      get: vi.fn().mockResolvedValue(undefined),
+      set: vi.fn().mockResolvedValue(true)
+    };
+    vi.stubGlobal("liteformsElectron", { credentials });
+    renderPanelWithConfig({});
+
+    fireEvent.change(screen.getByLabelText("OpenClaw Gateway token"), { target: { value: "typed-token" } });
+
+    expect(credentials.set).toHaveBeenCalledWith("openclaw", "typed-token");
+    vi.unstubAllGlobals();
+  });
+
+  it("loads the stored OpenClaw token on mount", async () => {
+    const credentials = {
+      get: vi.fn().mockResolvedValue("discovered-token"),
+      set: vi.fn().mockResolvedValue(true)
+    };
+    vi.stubGlobal("liteformsElectron", { credentials });
+    renderPanelWithConfig({});
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("OpenClaw Gateway token")).toHaveValue("discovered-token");
+    });
+    expect(credentials.get).toHaveBeenCalledWith("openclaw");
+    vi.unstubAllGlobals();
   });
 
   it("sends the configured OpenClaw gateway token as the active LLM credential", async () => {

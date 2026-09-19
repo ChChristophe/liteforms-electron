@@ -35,7 +35,7 @@ import { DistilWhisperWorkerClient, KokoroWorkerClient } from "@/lib/speech/work
 import type { AsrConfig, AsrRealtimeSession, TtsConfig } from "@/lib/speech";
 import { dispatchAvatarLipSyncFrame } from "@/lib/avatar/lipSyncEvents";
 import { logDiagnostic } from "@/lib/avatar/diagnosticLog";
-import { ensureCredential, resolveProviderCredential } from "@/lib/credential/credentialBridge";
+import { ensureCredential, getCredentialBridge, resolveProviderCredential } from "@/lib/credential/credentialBridge";
 import {
   capPreloadUiProgress,
   clampModelProgress,
@@ -260,10 +260,25 @@ export function ChatPanel({
   });
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [vrmFileName, setVrmFileName] = useState(initialVrmFileName ?? "");
+  // OpenClaw gateway token. Always editable in Settings (Web parity): the web
+  // search tool needs it even when the LLM provider is not OpenClaw. The value
+  // lives in the durable credential store (same one as the boot-time discovery
+  // and OnboardingModal). Never logged.
+  const [openclawToken, setOpenclawToken] = useState("");
 
   useEffect(() => {
     if (initialVrmFileName) setVrmFileName(initialVrmFileName);
   }, [initialVrmFileName]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void resolveProviderCredential("openclaw").then((token) => {
+      if (!cancelled && token) setOpenclawToken((current) => current || token);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const asrSessionRef = useRef<AsrRealtimeSession | null>(null);
   const googleLiveSessionRef = useRef<GoogleLiveBrowserSession | OpenAiRealtimeBrowserSession | null>(null);
@@ -999,7 +1014,6 @@ export function ChatPanel({
         clearRealtimeIdleTimer();
         realtimeIdleTimerRef.current = setTimeout(() => {
           realtimeIdleTimerRef.current = null;
-          logDiagnostic(`wake-word realtime idle timeout provider=${providerLabel} ms=${idleTimeoutMs}`);
           googleLiveSessionRef.current?.stop();
           googleLiveSessionRef.current = null;
           void googleLivePlaybackCtxRef.current?.close();
@@ -1034,25 +1048,21 @@ export function ChatPanel({
     // If a realtime voice session is active, push through it for vocal announcement.
     const session = googleLiveSessionRef.current;
     if (session?.isActive()) {
-      logDiagnostic(`timer expired label=${label} minutes=${minutes} session=active`);
       session.sendText(notificationText);
       return;
     }
 
     // Otherwise, open a new Realtime session and send the notification (like a text message).
-    let sessionPath = "none";
     if (isActiveRealtimeVoiceConfig(realtimeVoiceConfig) || isRealtimeVoiceProvider(config.provider)) {
       try {
         const activeSession = await startRealtimeVoiceSession({ captureMicrophone: false });
         if (activeSession?.isActive()) {
-          sessionPath = "new";
           activeSession.sendText(notificationText);
         }
       } catch (err) {
         console.warn("[ChatPanel] Timer notification Realtime session failed", err);
       }
     }
-    logDiagnostic(`timer expired label=${label} minutes=${minutes} session=${sessionPath}`);
   };
 
   function clearMicIdleTimer() {
@@ -1133,7 +1143,6 @@ export function ChatPanel({
         clearMicIdleTimer();
         micIdleTimerRef.current = setTimeout(() => {
           micIdleTimerRef.current = null;
-          logDiagnostic(`wake-word ASR idle timeout ms=${options.idleTimeoutMs}`);
           stopMicRecording();
         }, options.idleTimeoutMs);
       }
@@ -1450,6 +1459,20 @@ export function ChatPanel({
           >
             Configure
           </button>
+
+          <label className="openclaw-token-field">
+            <span>OpenClaw Gateway token</span>
+            <input
+              type="password"
+              value={openclawToken}
+              onChange={(e) => {
+                const value = e.target.value;
+                setOpenclawToken(value);
+                void getCredentialBridge()?.set("openclaw", value);
+              }}
+              placeholder="Required for web search function"
+            />
+          </label>
 
           {/* Advanced: local model status, cache, test buttons */}
           <details className="advanced-section">
