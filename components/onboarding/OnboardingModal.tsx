@@ -268,6 +268,27 @@ export function OnboardingModal({
     }
   }
 
+  function getTtsSpeed() {
+    return ttsConfig.provider === "openai" ? (ttsConfig.speed ?? 1) : 1;
+  }
+
+  function setTtsSpeed(speed: number) {
+    if (!Number.isFinite(speed)) return;
+    setTtsConfig({ ...ttsConfig, speed } as TtsConfig);
+  }
+
+  // Realtime output voice speed (protocol §Bloc `providers.llm.speed`):
+  // openai-realtime only — google-live has no speed field.
+  function getRealtimeSpeed() {
+    return realtimeVoiceConfig.provider === "openai-realtime" ? (realtimeVoiceConfig.speed ?? 1) : 1;
+  }
+
+  function setRealtimeSpeed(speed: number) {
+    if (!Number.isFinite(speed)) return;
+    if (realtimeVoiceConfig.provider !== "openai-realtime") return;
+    setRealtimeVoiceConfig({ ...realtimeVoiceConfig, speed });
+  }
+
   function getSttModel() {
     return "model" in asrConfig ? (asrConfig.model ?? sttMeta.defaultModel ?? "") : "";
   }
@@ -437,6 +458,19 @@ export function OnboardingModal({
                 </select>
               </label>
             )}
+            {config.provider === "openai-realtime" && isActiveRealtimeVoiceConfig(realtimeVoiceConfig) && (
+              <label>
+                Vitesse de la voix (0.25 - 1.5)
+                <input
+                  type="number"
+                  min={0.25}
+                  max={1.5}
+                  step={0.05}
+                  value={getRealtimeSpeed()}
+                  onChange={(e) => setRealtimeSpeed(Number.parseFloat(e.target.value))}
+                />
+              </label>
+            )}
             {showEndpoint && (
               <label>
                 Endpoint
@@ -592,6 +626,19 @@ export function OnboardingModal({
                 <input value={getTtsModel()} onChange={(e) => setTtsModel(e.target.value)} />
               </label>
             ) : null}
+            {ttsConfig.provider === "openai" && (
+              <label>
+                Speed (0.25 - 4)
+                <input
+                  type="number"
+                  min={0.25}
+                  max={4}
+                  step={0.05}
+                  value={getTtsSpeed()}
+                  onChange={(e) => setTtsSpeed(Number.parseFloat(e.target.value))}
+                />
+              </label>
+            )}
             {ttsMeta.needsCredential && (
               <label>
                 Voice credential

@@ -235,3 +235,154 @@ describe("parseDeviceConfig wakeWord validation (protocol 18/09/2026)", () => {
     expect(result.warnings).toEqual([]);
   });
 });
+
+describe("parseDeviceConfig providers.tts.speed validation (protocol 19/09/2026)", () => {
+  const slot = (provider: string) => ({ provider, model: "m", endpoint: "https://e", voiceId: null });
+  const providers = (tts: Record<string, unknown>, llm = slot("openai"), stt = slot("deepgram")) => ({
+    llm,
+    tts,
+    stt
+  });
+  function parseProviders(value: Record<string, unknown>) {
+    return parseDeviceConfig({ ...withAvatar({}), providers: value }) as
+      | { config: PocDeviceConfig; warnings: string[] }
+      | { error: string; message: string };
+  }
+
+  it("keeps a finite speed within [0.25, 4] and emits no warning", () => {
+    for (const speed of [0.25, 1, 1.5, 4]) {
+      const result = parseProviders(providers({ ...slot("openai"), speed })) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(result.config.providers.tts.speed).toBe(speed);
+      expect(result.warnings).toEqual([]);
+    }
+  });
+
+  it("ignores an out-of-bounds, non-finite or non-numeric speed with the protocol warning", () => {
+    for (const speed of [0.2, 4.1, Number.NaN, Number.POSITIVE_INFINITY, "1.5"]) {
+      const result = parseProviders(providers({ ...slot("openai"), speed })) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(result.config.providers.tts).not.toHaveProperty("speed");
+      expect(result.warnings).toEqual(["providers.tts.speed ignored"]);
+    }
+  });
+
+  it("treats null or absent speed as 'no local setting' without a warning", () => {
+    const nulled = parseProviders(providers({ ...slot("openai"), speed: null })) as {
+      config: PocDeviceConfig;
+      warnings: string[];
+    };
+    expect(nulled.config.providers.tts).not.toHaveProperty("speed");
+    expect(nulled.warnings).toEqual([]);
+
+    const absent = parseProviders(providers(slot("openai"))) as {
+      config: PocDeviceConfig;
+      warnings: string[];
+    };
+    expect(absent.config.providers.tts).not.toHaveProperty("speed");
+    expect(absent.warnings).toEqual([]);
+  });
+
+  it("never carries speed on the stt slot (dropped silently, no warning)", () => {
+    const result = parseProviders({
+      llm: slot("openai-realtime"),
+      tts: slot("openai"),
+      stt: { ...slot("deepgram"), speed: 0.5 }
+    }) as { config: PocDeviceConfig; warnings: string[] };
+
+    expect(result.config.providers.stt).not.toHaveProperty("speed");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("uses the elevenlabs range [0.7, 1.2] and ignores a value outside it", () => {
+    const valid = parseProviders(providers({ ...slot("elevenlabs"), speed: 0.9 })) as {
+      config: PocDeviceConfig;
+      warnings: string[];
+    };
+    expect(valid.config.providers.tts.speed).toBe(0.9);
+    expect(valid.warnings).toEqual([]);
+
+    for (const speed of [0.69, 1.21]) {
+      const invalid = parseProviders(providers({ ...slot("elevenlabs"), speed })) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(invalid.config.providers.tts).not.toHaveProperty("speed");
+      expect(invalid.warnings).toEqual(["providers.tts.speed ignored"]);
+    }
+  });
+
+  it("ignores tts.speed for a provider with no contract range, with the protocol warning", () => {
+    for (const provider of ["kokoro", "deepgram", "google"]) {
+      const result = parseProviders(providers({ ...slot(provider), speed: 1 })) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(result.config.providers.tts).not.toHaveProperty("speed");
+      expect(result.warnings).toEqual(["providers.tts.speed ignored"]);
+    }
+  });
+});
+
+describe("parseDeviceConfig providers.llm.speed validation (protocol 19/09/2026)", () => {
+  const slot = (provider: string) => ({ provider, model: "m", endpoint: "https://e", voiceId: null });
+  function parseProviders(llm: Record<string, unknown>) {
+    return parseDeviceConfig({
+      ...withAvatar({}),
+      providers: { llm, tts: slot("kokoro"), stt: slot("deepgram") }
+    }) as { config: PocDeviceConfig; warnings: string[] } | { error: string; message: string };
+  }
+
+  it("keeps a finite llm speed within [0.25, 1.5] for openai-realtime and emits no warning", () => {
+    for (const speed of [0.25, 0.8, 1, 1.5]) {
+      const result = parseProviders({ ...slot("openai-realtime"), speed }) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(result.config.providers.llm.speed).toBe(speed);
+      expect(result.warnings).toEqual([]);
+    }
+  });
+
+  it("ignores an out-of-range, non-finite or non-numeric llm speed for openai-realtime with the protocol warning", () => {
+    for (const speed of [0.2, 1.6, Number.NaN, Number.POSITIVE_INFINITY, "1.2"]) {
+      const result = parseProviders({ ...slot("openai-realtime"), speed }) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(result.config.providers.llm).not.toHaveProperty("speed");
+      expect(result.warnings).toEqual(["providers.llm.speed ignored"]);
+    }
+  });
+
+  it("ignores llm.speed for google-live and non-realtime providers with the protocol warning", () => {
+    for (const provider of ["google-live", "openai", "anthropic"]) {
+      const result = parseProviders({ ...slot(provider), speed: 1.2 }) as {
+        config: PocDeviceConfig;
+        warnings: string[];
+      };
+      expect(result.config.providers.llm).not.toHaveProperty("speed");
+      expect(result.warnings).toEqual(["providers.llm.speed ignored"]);
+    }
+  });
+
+  it("treats null or absent llm speed as 'no local setting' without a warning", () => {
+    const nulled = parseProviders({ ...slot("openai-realtime"), speed: null }) as {
+      config: PocDeviceConfig;
+      warnings: string[];
+    };
+    expect(nulled.config.providers.llm).not.toHaveProperty("speed");
+    expect(nulled.warnings).toEqual([]);
+
+    const absent = parseProviders(slot("openai-realtime")) as {
+      config: PocDeviceConfig;
+      warnings: string[];
+    };
+    expect(absent.config.providers.llm).not.toHaveProperty("speed");
+    expect(absent.warnings).toEqual([]);
+  });
+});

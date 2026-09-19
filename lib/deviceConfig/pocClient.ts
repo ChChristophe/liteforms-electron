@@ -163,6 +163,10 @@ export function mapPocProvidersToEndpoints(
     provider: providers.tts.provider as TtsProviderId,
     model: providers.tts.model,
     baseUrl: providers.tts.endpoint,
+    // providers.tts.speed (protocol §Bloc `providers.tts.speed`): the phone is
+    // authoritative — a non-null speed overrides the local desktop setting,
+    // null/absent leaves the provider default. Carried only for tts.
+    ...(providers.tts.speed != null ? { speed: providers.tts.speed } : {}),
     ...(voiceId
       ? providers.tts.provider === "elevenlabs" ? { voiceId } : { voice: voiceId }
       : {})
@@ -190,7 +194,13 @@ export function mapPocProvidersToEndpoints(
       ...(credential ? { credential } : {}),
       model: providers.llm.model,
       voice: providers.llm.voiceId ?? defaultRealtimeVoice(llm.provider),
-      websocketUrl: providers.llm.endpoint
+      websocketUrl: providers.llm.endpoint,
+      // providers.llm.speed (protocol §Bloc `providers.llm.speed`): the realtime
+      // voice covers output, so the speed travels on the llm slot. The validator
+      // already dropped it for google-live / non-realtime providers.
+      ...(providers.llm.provider === "openai-realtime" && providers.llm.speed != null
+        ? { speed: providers.llm.speed }
+        : {})
     } as RealtimeVoiceConfig;
   } else {
     realtimeVoice = previousRealtime;

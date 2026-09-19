@@ -8,6 +8,9 @@ export type OpenAiRealtimeVoiceConfig = {
   language?: string;
   instructions?: string;
   websocketUrl?: string;
+  /** Output voice speed (`session.audio.output.speed`, GA). Optional:
+   * absent = OpenAI default, and no `speed` is sent at all. */
+  speed?: number;
 };
 
 /** Flat OpenAI Realtime tool shape, mapped from the shared tool catalogue. */
@@ -62,7 +65,10 @@ export function normalizeOpenAiRealtimeVoiceConfig(config: OpenAiRealtimeVoiceCo
     voice: config.voice ?? OPENAI_REALTIME_DEFAULT_VOICE,
     language: config.language ?? "en-US",
     instructions: config.instructions ?? "Keep spoken replies brief and natural.",
-    websocketUrl: config.websocketUrl ?? OPENAI_REALTIME_DEFAULT_WS_URL
+    websocketUrl: config.websocketUrl ?? OPENAI_REALTIME_DEFAULT_WS_URL,
+    // Optional: only a finite number is honoured, undefined means "provider
+    // default" and the session.update omits the field entirely.
+    speed: Number.isFinite(config.speed) ? config.speed : undefined
   };
 }
 
@@ -129,7 +135,9 @@ export function buildOpenAiRealtimeSessionUpdateMessage(
         },
         output: {
           format: { type: "audio/pcm", rate: 24000 },
-          voice: normalized.voice
+          voice: normalized.voice,
+          // Only sent when configured: don't override the provider default.
+          ...(normalized.speed !== undefined ? { speed: normalized.speed } : {})
         }
       }
     }

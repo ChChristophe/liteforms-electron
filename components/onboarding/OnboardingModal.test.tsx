@@ -362,6 +362,49 @@ describe("OnboardingModal LLM step", () => {
     );
   });
 
+  it("shows the realtime voice speed input only for OpenAI Realtime", () => {
+    renderModal();
+    goToLlmStep();
+
+    expect(screen.queryByLabelText("Vitesse de la voix (0.25 - 1.5)")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: /model provider/i }), {
+      target: { value: "google-live" }
+    });
+    expect(screen.queryByLabelText("Vitesse de la voix (0.25 - 1.5)")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: /model provider/i }), {
+      target: { value: "openai-realtime" }
+    });
+    expect(screen.getByLabelText("Vitesse de la voix (0.25 - 1.5)")).toHaveValue(1);
+  });
+
+  it("guards non-finite realtime speed edits and propagates speed to onUseCustom", () => {
+    const onUseCustom = vi.fn();
+    renderModal({ onUseCustom });
+    goToLlmStep();
+    fireEvent.change(screen.getByRole("combobox", { name: /model provider/i }), {
+      target: { value: "openai-realtime" }
+    });
+
+    const speedInput = screen.getByLabelText("Vitesse de la voix (0.25 - 1.5)");
+    fireEvent.change(speedInput, { target: { value: "1.25" } });
+    expect(speedInput).toHaveValue(1.25);
+
+    // Number.parseFloat("") is NaN — the guard must keep the previous value.
+    fireEvent.change(speedInput, { target: { value: "" } });
+    expect(speedInput).toHaveValue(1.25);
+
+    fireEvent.change(screen.getByLabelText("OpenAI Realtime credential"), { target: { value: "sk-rt" } });
+    fireEvent.click(screen.getByRole("button", { name: /start liteforms/i }));
+
+    expect(onUseCustom).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "openai-realtime" }),
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ provider: "openai-realtime", speed: 1.25 })
+    );
+  });
+
   it("shows endpoint field when a non-local provider is selected", () => {
     renderModal();
     goToLlmStep();
@@ -1189,6 +1232,46 @@ describe("OnboardingModal TTS step - extended providers", () => {
     const modelSelect = screen.getByRole("combobox", { name: "Model" });
     expect(modelSelect).toHaveValue("gpt-4o-mini-tts");
     expect(screen.getByRole("option", { name: /tts-1 hd/i })).toBeInTheDocument();
+  });
+
+  it("OpenAI TTS shows a speed input defaulting to 1", () => {
+    goToTtsStep();
+    selectTtsProvider("openai");
+    expect(screen.getByLabelText("Speed (0.25 - 4)")).toHaveValue(1);
+  });
+
+  it("only OpenAI shows the TTS speed input", () => {
+    goToTtsStep();
+    expect(screen.queryByLabelText("Speed (0.25 - 4)")).not.toBeInTheDocument();
+    selectTtsProvider("elevenlabs");
+    expect(screen.queryByLabelText("Speed (0.25 - 4)")).not.toBeInTheDocument();
+    selectTtsProvider("openai");
+    expect(screen.getByLabelText("Speed (0.25 - 4)")).toBeInTheDocument();
+  });
+
+  it("ignores non-finite speed edits and propagates the speed to onUseCustom", () => {
+    cleanup();
+    const onUseCustom = vi.fn();
+    renderModal({ onUseCustom });
+    goToTtsStep();
+    selectTtsProvider("openai");
+
+    const speedInput = screen.getByLabelText("Speed (0.25 - 4)");
+    fireEvent.change(speedInput, { target: { value: "1.5" } });
+    expect(speedInput).toHaveValue(1.5);
+
+    // Number.parseFloat("") is NaN — the guard must keep the previous value.
+    fireEvent.change(speedInput, { target: { value: "" } });
+    expect(speedInput).toHaveValue(1.5);
+
+    // TTS → STT, then submit the custom config.
+    fireEvent.click(screen.getByRole("button", { name: /^next$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /start liteforms/i }));
+    expect(onUseCustom).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ provider: "openai", speed: 1.5 }),
+      expect.anything()
+    );
   });
 
   it("Google TTS shows voice dropdown with Kore as default", () => {

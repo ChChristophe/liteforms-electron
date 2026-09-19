@@ -79,7 +79,23 @@ type PocProviderConfig = {
   model: string;
   endpoint: string;
   voiceId: string | null;
+  /** Voice speed (protocol §Bloc `providers.llm.speed` / `providers.tts.speed`,
+   * 19/09/2026): on `tts` when the voice comes from the TTS provider, on `llm`
+   * when `llm.provider` is `openai-realtime` (the realtime voice covers output).
+   * `null`/absent = provider default. */
+  speed?: number | null;
 };
+
+/** Contract bounds for `providers.tts.speed`, scoped per provider (protocol
+ * §Bloc `providers.tts.speed`). A provider without an entry does not support
+ * the field: a received speed is ignored with a warning. */
+export const TTS_SPEED_RANGES: Record<string, readonly [number, number]> = {
+  openai: [0.25, 4],
+  elevenlabs: [0.7, 1.2]
+};
+
+/** Contract bounds for `providers.llm.speed` (`openai-realtime` only). */
+export const LLM_SPEED_RANGE: readonly [number, number] = [0.25, 1.5];
 
 const SECRET_FIELD_PATTERN = /^credential$|^api[-_]?key$|^token$|^password$|^secret$/i;
 
@@ -122,6 +138,10 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
   }
 
   const warnings: string[] = [];
+  // Voice speed is slot/provider scoped (protocol §Bloc `providers.llm.speed` /
+  // `providers.tts.speed`); the slots are rebuilt so a stray or unsupported
+  // `speed` never leaks.
+  const sanitizedProviders = sanitizeProviderSpeeds(providers, warnings);
   const avatar = (typeof body.avatar === "object" && body.avatar !== null ? body.avatar : {}) as Record<string, unknown>;
   const modelRef = parseModelRef(avatar.modelRef);
   if (avatar.modelRef !== undefined && modelRef === null) {
@@ -175,7 +195,7 @@ export function parseDeviceConfig(raw: unknown): { config: PocDeviceConfig; warn
         pose
       },
       environment,
-      providers,
+      providers: sanitizedProviders,
       ...(wakeWord !== undefined ? { wakeWord } : {})
     }
   };
@@ -291,6 +311,63 @@ export function parseWakeWordCue(value: unknown): { cue?: PocWakeWordCueConfig; 
   }
 
   return Object.keys(cue).length > 0 ? { cue, warnings } : { warnings };
+}
+
+/**
+ * Validates the per-slot voice speed fields appliance-side (the client is never
+ * trusted — protocol §Bloc `providers.llm.speed` / `providers.tts.speed`).
+ * Every slot is rebuilt, so a stray `speed` on `stt` is silently dropped.
+ *
+ * - `tts.speed`: the range depends on the TTS provider (`TTS_SPEED_RANGES`); a
+ *   provider without a contract range is not supported → ignored with
+ *   `providers.tts.speed ignored`.
+ * - `llm.speed`: only meaningful for `openai-realtime` and within
+ *   `LLM_SPEED_RANGE` → `session.audio.output.speed`; `google-live` and
+ *   non-realtime providers are ignored with `providers.llm.speed ignored`.
+ * - `null`/absent = provider default (no key, no warning); the rest of the
+ *   config still applies, never a 400.
+ */
+function sanitizeProviderSpeeds(
+  providers: PocDeviceConfig["providers"],
+  warnings: string[]
+): PocDeviceConfig["providers"] {
+  const copy = (provider: PocProviderConfig, speed?: number): PocProviderConfig => ({
+    provider: provider.provider,
+    model: provider.model,
+    endpoint: provider.endpoint,
+    voiceId: provider.voiceId,
+    ...(speed !== undefined ? { speed } : {})
+  });
+
+  const inRange = (value: unknown, range: readonly [number, number]): value is number =>
+    typeof value === "number" && Number.isFinite(value) && value >= range[0] && value <= range[1];
+
+  const ttsRange = TTS_SPEED_RANGES[providers.tts.provider];
+  let ttsSpeed: number | undefined;
+  const rawTtsSpeed = providers.tts.speed;
+  if (rawTtsSpeed !== undefined && rawTtsSpeed !== null) {
+    if (ttsRange && inRange(rawTtsSpeed, ttsRange)) {
+      ttsSpeed = rawTtsSpeed;
+    } else {
+      warnings.push("providers.tts.speed ignored");
+    }
+  }
+
+  let llmSpeed: number | undefined;
+  const rawLlmSpeed = providers.llm.speed;
+  if (rawLlmSpeed !== undefined && rawLlmSpeed !== null) {
+    if (providers.llm.provider === "openai-realtime" && inRange(rawLlmSpeed, LLM_SPEED_RANGE)) {
+      llmSpeed = rawLlmSpeed;
+    } else {
+      warnings.push("providers.llm.speed ignored");
+    }
+  }
+
+  return {
+    llm: copy(providers.llm, llmSpeed),
+    tts: copy(providers.tts, ttsSpeed),
+    stt: copy(providers.stt)
+  };
 }
 
 function parseModelRef(value: unknown): PocModelRef | null {

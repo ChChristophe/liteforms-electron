@@ -475,3 +475,88 @@ describe("wakeWord from device-config (protocol 18/09/2026)", () => {
     expect(invalid.warnings).toContain("wakeWord.cue.blinkDurationMs ignoré (entier 300–3000 attendu)");
   });
 });
+
+describe("providers.tts.speed from device-config (protocol 19/09/2026)", () => {
+  it("maps a valid tts speed into the session TTS config", async () => {
+    const { hooks } = createHooks();
+
+    await applyPocDeviceConfig(
+      {
+        ...validPayload,
+        receivedAt: "r-speed",
+        providers: {
+          ...validPayload.providers,
+          // validPayload.tts is elevenlabs, whose contract range is [0.7, 1.2].
+          tts: { ...validPayload.providers.tts, speed: 0.9 }
+        }
+      },
+      hooks
+    );
+
+    expect(loadSessionConfig()?.tts).toMatchObject({ speed: 0.9 });
+  });
+
+  it("does not set a speed when the Mobile pushes speed:null (provider default)", async () => {
+    const { hooks } = createHooks();
+
+    await applyPocDeviceConfig(
+      {
+        ...validPayload,
+        receivedAt: "r-speed-null",
+        providers: {
+          ...validPayload.providers,
+          tts: { ...validPayload.providers.tts, speed: null }
+        }
+      },
+      hooks
+    );
+
+    expect(loadSessionConfig()?.tts).not.toHaveProperty("speed");
+  });
+});
+
+describe("providers.llm.speed from device-config (protocol 19/09/2026)", () => {
+  const realtimeWithSpeed = (speed: number | null) => ({
+    ...validPayload,
+    receivedAt: "r-llm-speed",
+    providers: {
+      ...validPayload.providers,
+      llm: {
+        provider: "openai-realtime",
+        model: "gpt-realtime-2",
+        endpoint: "wss://api.openai.com/v1/realtime",
+        voiceId: "marin",
+        speed
+      }
+    }
+  });
+
+  it("maps a valid llm.speed into realtimeVoice.speed for openai-realtime", async () => {
+    const { hooks } = createHooks();
+
+    await applyPocDeviceConfig(realtimeWithSpeed(1.25), hooks);
+
+    expect(loadSessionConfig()?.realtimeVoice).toMatchObject({
+      provider: "openai-realtime",
+      voice: "marin",
+      speed: 1.25
+    });
+  });
+
+  it("does not set realtimeVoice.speed when the Mobile pushes speed:null", async () => {
+    const { hooks } = createHooks();
+
+    await applyPocDeviceConfig(realtimeWithSpeed(null), hooks);
+
+    expect(loadSessionConfig()?.realtimeVoice).not.toHaveProperty("speed");
+  });
+
+  it("ignores an out-of-range llm.speed (warning) and leaves realtimeVoice.speed unset", async () => {
+    const { hooks } = createHooks();
+
+    const result = await applyPocDeviceConfig(realtimeWithSpeed(2), hooks);
+
+    expect(result.warnings).toContain("providers.llm.speed ignored");
+    expect(loadSessionConfig()?.realtimeVoice).not.toHaveProperty("speed");
+  });
+});

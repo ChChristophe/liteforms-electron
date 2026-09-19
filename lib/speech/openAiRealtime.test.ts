@@ -96,6 +96,18 @@ describe("OpenAI Realtime voice", () => {
     });
   });
 
+  it("sends audio.output.speed only when a speed is configured", () => {
+    const withSpeed = buildOpenAiRealtimeSessionUpdateMessage({
+      provider: "openai-realtime",
+      speed: 1.25
+    });
+    expect(withSpeed.session.audio.output.speed).toBe(1.25);
+
+    const without = buildOpenAiRealtimeSessionUpdateMessage({ provider: "openai-realtime" });
+    expect(without.session.audio.output).not.toHaveProperty("speed");
+    expect(without.session.audio.output.voice).toBe("coral");
+  });
+
   it("uses the browser WebSocket subprotocol auth shape documented by OpenAI", () => {
     expect(buildOpenAiRealtimeWebSocketUrl({ provider: "openai-realtime", model: "gpt-realtime-2" })).toBe(
       "wss://api.openai.com/v1/realtime?model=gpt-realtime-2"
