@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TimerStore } from "@/lib/storage/timerStore";
 import { TimerManager } from "@/lib/timer/timerManager";
 import type { Timer } from "@/lib/timer/types";
-import { createToolRegistry } from "./toolRegistry";
+import { createToolRegistry, type ToolRegistryDeps } from "./toolRegistry";
 
 function createMemoryStore(initial: Timer[] = []): TimerStore {
   let timers = initial.map((timer) => ({ ...timer }));
@@ -19,10 +19,11 @@ function createMemoryStore(initial: Timer[] = []): TimerStore {
   };
 }
 
-function createRegistry() {
+function createRegistry(overrides: Partial<ToolRegistryDeps> = {}) {
   return createToolRegistry({
     timerManager: new TimerManager(createMemoryStore()),
-    now: () => new Date("2026-01-05T14:30:00Z")
+    now: () => new Date("2026-01-05T14:30:00Z"),
+    ...overrides
   });
 }
 
@@ -44,8 +45,43 @@ afterEach(() => {
 describe("tool registry", () => {
   it("exposes the shared definitions and instructions", () => {
     const registry = createRegistry();
-    expect(registry.definitions.map((tool) => tool.name)).toHaveLength(7);
+    expect(registry.definitions.map((tool) => tool.name)).toHaveLength(8);
     expect(registry.instructions).toContain("If you are unsure whether to use a tool, USE IT");
+  });
+
+  it("does not touch the network when the registry is built", () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    try {
+      createRegistry();
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("routes openclaw_web_search through the injected search dependency", async () => {
+    const searchWeb = vi.fn().mockResolvedValue("Il fait 18 degres a Paris.");
+    const registry = createRegistry({ searchWeb });
+    expect(await registry.execute("openclaw_web_search", JSON.stringify({ query: "  meteo Paris  " }))).toBe(
+      "Il fait 18 degres a Paris."
+    );
+    expect(searchWeb).toHaveBeenCalledWith("meteo Paris");
+  });
+
+  it("never throws when the search dependency fails", async () => {
+    const registry = createRegistry({ searchWeb: vi.fn().mockRejectedValue(new Error("gateway down")) });
+    await expect(registry.execute("openclaw_web_search", JSON.stringify({ query: "news" }))).resolves.toBe(
+      "Error executing function"
+    );
+  });
+
+  it("rejects a missing or empty search query without calling the dependency", async () => {
+    const searchWeb = vi.fn();
+    const registry = createRegistry({ searchWeb });
+    expect(await registry.execute("openclaw_web_search", "{}")).toBe("Error executing function");
+    expect(await registry.execute("openclaw_web_search", JSON.stringify({ query: "   " }))).toBe("Error executing function");
+    expect(searchWeb).not.toHaveBeenCalled();
   });
 
   it("formats the current time exactly like the web route", async () => {

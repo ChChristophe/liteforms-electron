@@ -12,17 +12,42 @@ export type ToolRegistryDeps = {
   timerManager: TimerManager;
   /** Injectable clock; tests pin it to make time/date output deterministic. */
   now?: () => Date;
+  /**
+   * Web-search dependency. Defaults to the local OpenClaw route (web parity);
+   * tests inject a stub so the registry never touches the network.
+   */
+  searchWeb?: (query: string) => Promise<string>;
 };
+
+/** Local route that proxies a query to the OpenClaw gateway. */
+export const OPENCLAW_WEB_SEARCH_ROUTE = "/api/functions/openclaw_web_search";
+
+/**
+ * Calls the local OpenClaw web-search route and returns the formatted answer
+ * exactly like the web handler: `answer ?? error ?? "No result from OpenClaw."`.
+ * The optional token is only sent when present (the route resolves it
+ * server-side otherwise) and is never logged here.
+ */
+export async function searchOpenClawWeb(query: string, token?: string): Promise<string> {
+  const res = await fetch(OPENCLAW_WEB_SEARCH_ROUTE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(token ? { query, token } : { query })
+  });
+  const data = (await res.json()) as { answer?: string; error?: string };
+  return data.answer ?? data.error ?? "No result from OpenClaw.";
+}
 
 /**
  * Builds the provider-agnostic tool registry: one catalogue, one executor.
  * Every string returned by `execute` is what the model receives as the tool
  * output, so the formats mirror the web reference verbatim.
- *
- * `openclaw_web_search` will be added here (with its route and server-side
- * token) once that capability lands.
  */
-export function createToolRegistry({ timerManager, now = () => new Date() }: ToolRegistryDeps): ToolRegistry {
+export function createToolRegistry({
+  timerManager,
+  now = () => new Date(),
+  searchWeb = searchOpenClawWeb
+}: ToolRegistryDeps): ToolRegistry {
   const execute = async (name: string, rawArgs: string): Promise<string> => {
     try {
       switch (name) {
@@ -45,6 +70,13 @@ export function createToolRegistry({ timerManager, now = () => new Date() }: Too
             // The parser messages ("Division par zéro", "Expression vide", ...) reach the model as-is.
             return error instanceof Error ? error.message : "Error executing function";
           }
+        }
+        case "openclaw_web_search": {
+          const parsed = JSON.parse(rawArgs) as { query?: unknown };
+          if (typeof parsed.query !== "string" || parsed.query.trim().length === 0) {
+            return "Error executing function";
+          }
+          return await searchWeb(parsed.query.trim());
         }
         case "start_timer": {
           const parsed = JSON.parse(rawArgs) as { duration_minutes?: number; label?: string };

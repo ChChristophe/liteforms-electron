@@ -31,7 +31,8 @@ const { executeToolMock, playTimerChimeMock, wakeWordBridgeRef } = vi.hoisted(()
 }));
 
 vi.mock("@/lib/llm/toolRegistry", () => ({
-  createToolRegistry: vi.fn(() => ({ definitions: [], instructions: "", execute: executeToolMock }))
+  createToolRegistry: vi.fn(() => ({ definitions: [], instructions: "", execute: executeToolMock })),
+  searchOpenClawWeb: vi.fn()
 }));
 
 vi.mock("@/lib/speech/timerChime", () => ({

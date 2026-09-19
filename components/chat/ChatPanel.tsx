@@ -5,7 +5,7 @@ import { buildPersonaPrompt, createLlmAdapter, getDefaultProviderConfig, getProv
 import { sanitizeAssistantText } from "@/lib/llm/output";
 import { LocalGemmaWorkerClient } from "@/lib/llm/localGemmaWorker";
 import type { BaseProviderConfig, ChatMessage, LlmProviderId } from "@/lib/llm";
-import { createToolRegistry } from "@/lib/llm/toolRegistry";
+import { createToolRegistry, searchOpenClawWeb } from "@/lib/llm/toolRegistry";
 import type { TimerExpiredDetail, TimerManager } from "@/lib/timer";
 import {
   WakeWordChatBridge,
@@ -296,8 +296,19 @@ export function ChatPanel({
   // (which closes over the current config and realtime session refs).
   const timerExpiredHandlerRef = useRef<((detail: TimerExpiredDetail) => void) | null>(null);
 
-  /** Provider-agnostic tool executor bound to the page-owned timer manager. */
-  const toolRegistry = useMemo(() => createToolRegistry({ timerManager }), [timerManager]);
+  /**
+   * Provider-agnostic tool executor bound to the page-owned timer manager.
+   * The OpenClaw web-search tool gets the local gateway token from the durable
+   * credential store (never logged); the route also resolves it server-side.
+   */
+  const toolRegistry = useMemo(
+    () =>
+      createToolRegistry({
+        timerManager,
+        searchWeb: async (query) => searchOpenClawWeb(query, await resolveProviderCredential("openclaw"))
+      }),
+    [timerManager]
+  );
 
   /** IDs of local models that are currently wanted based on configured providers. */
   const activeLocalModelIds = useMemo<Set<LocalModelId>>(() => {

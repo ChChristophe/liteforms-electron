@@ -172,13 +172,13 @@ describe("Google Live function calling", () => {
     const setup = JSON.parse(MockWebSocket.latest!.sent[0]);
     const declarations = setup.setup.tools[0].functionDeclarations;
     expect(setup.setup.tools).toHaveLength(1);
-    expect(declarations).toHaveLength(7);
+    expect(declarations).toHaveLength(8);
     expect(declarations[0]).toEqual({
       name: "get_current_time",
       description: expect.any(String),
       parameters: { type: "OBJECT", properties: {}, required: [] }
     });
-    expect(declarations.map((declaration: { name: string }) => declaration.name)).not.toContain("openclaw_web_search");
+    expect(declarations.map((declaration: { name: string }) => declaration.name)).toContain("openclaw_web_search");
     expect(setup.setup.systemInstruction.parts[0].text).toContain("If you are unsure whether to use a tool, USE IT");
     expect(setup.setup.systemInstruction.parts[0].text).toContain("PERSONA");
   });

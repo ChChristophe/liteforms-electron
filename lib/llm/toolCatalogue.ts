@@ -4,8 +4,9 @@
  * provider (openAiRealtime.ts / googleLive.ts); Electron keeps a single source
  * of truth and each adapter maps it to its own wire format.
  *
- * `openclaw_web_search` is intentionally absent: it needs a route and a
- * server-side token that do not exist yet. Add it here in a later step.
+ * `openclaw_web_search` is served by the local `POST
+ * /api/functions/openclaw_web_search` route, which resolves the OpenClaw
+ * gateway token server-side (durable credential store) and never echoes it.
  */
 
 export type JsonSchemaType = "object" | "string" | "number" | "boolean" | "array";
@@ -35,6 +36,21 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description:
       "Get the current day and date. Always call this function when the user asks about the day (lundi, mardi...), the date, or what day it is. Never answer date questions from memory.",
     parameters: { type: "object", properties: {}, required: [] }
+  },
+  {
+    name: "openclaw_web_search",
+    description:
+      "Search the internet for real-time information. Always call this function when the user asks about weather, news, current events, public figures, prices, sports results, or any factual question requiring up-to-date data. Pass a concise search query in the same language as the user's question.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The search query to look up on the web"
+        }
+      },
+      required: ["query"]
+    }
   },
   {
     name: "start_timer",
@@ -115,6 +131,7 @@ RULES:
 - When the user asks about time, hour, or any temporal information about the time → ALWAYS call get_current_time() first. NEVER answer from memory.
 - When the user asks about the day (lundi, mardi...), the date, or what day it is → ALWAYS call get_current_date() first. NEVER answer from memory.
 - When the user asks a math question or a calculation (addition, subtraction, multiplication, division, percentage) or mentions numbers with an operation → ALWAYS call calculate(expression). NEVER compute from memory.
+- When the user asks about weather, news, current events, public figures, prices, sports results, or any factual question requiring real-time data → ALWAYS call openclaw_web_search(query) first. NEVER answer from memory.
 - After calling a tool, relay the result to the user naturally and concisely in character.
 - If you are unsure whether to use a tool, USE IT. It is always better to call a tool than to guess.
 

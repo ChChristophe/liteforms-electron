@@ -4,6 +4,7 @@ import { TOOL_DEFINITIONS, TOOL_INSTRUCTIONS } from "./toolCatalogue";
 const EXPECTED_TOOL_NAMES = [
   "get_current_time",
   "get_current_date",
+  "openclaw_web_search",
   "start_timer",
   "get_timer_status",
   "cancel_timer",
@@ -12,13 +13,17 @@ const EXPECTED_TOOL_NAMES = [
 ];
 
 describe("shared tool catalogue", () => {
-  it("exposes exactly the seven tools of this step, in a stable order", () => {
+  it("exposes exactly the eight tools of this step, in a stable order", () => {
     expect(TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual(EXPECTED_TOOL_NAMES);
   });
 
-  it("does not advertise the not-yet-implemented openclaw_web_search tool", () => {
-    expect(TOOL_DEFINITIONS.map((tool) => tool.name)).not.toContain("openclaw_web_search");
-    expect(TOOL_INSTRUCTIONS).not.toContain("openclaw_web_search");
+  it("advertises openclaw_web_search with its required query parameter", () => {
+    const tool = TOOL_DEFINITIONS.find((entry) => entry.name === "openclaw_web_search");
+    expect(tool?.description).toContain("Search the internet for real-time information");
+    expect(tool?.parameters.required).toEqual(["query"]);
+    expect(tool?.parameters.properties?.query?.type).toBe("string");
+    expect(TOOL_INSTRUCTIONS).toContain("ALWAYS call openclaw_web_search(query) first");
+    expect(TOOL_INSTRUCTIONS).toContain("NEVER answer from memory");
   });
 
   it("gives every tool a description and a JSON-schema parameters object", () => {

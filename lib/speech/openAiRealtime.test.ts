@@ -166,14 +166,14 @@ describe("OpenAI Realtime function calling", () => {
     startOpenAiSession({ onFunctionCall: vi.fn() });
     const update = JSON.parse(MockWebSocket.latest!.sent[0]);
     expect(update.session.tool_choice).toBe("auto");
-    expect(update.session.tools).toHaveLength(7);
+    expect(update.session.tools).toHaveLength(8);
     expect(update.session.tools[0]).toEqual({
       type: "function",
       name: "get_current_time",
       description: expect.any(String),
       parameters: { type: "object", properties: {}, required: [] }
     });
-    expect(update.session.tools.map((tool: { name: string }) => tool.name)).not.toContain("openclaw_web_search");
+    expect(update.session.tools.map((tool: { name: string }) => tool.name)).toContain("openclaw_web_search");
     expect(update.session.instructions).toContain("If you are unsure whether to use a tool, USE IT");
     expect(update.session.instructions).toContain("PERSONA");
   });
