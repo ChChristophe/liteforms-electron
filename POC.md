@@ -318,6 +318,19 @@ Cette direction remplace la question ouverte « lire le fichier OpenClaw ou
 non ? » : oui, c'est le comportement cible de l'architecture finale, avec les
 garde-fous ci-dessus.
 
+**Implémentation (19/09/2026, non validée terrain)** : `electron/openclaw/gatewayToken.ts`
+(résolveur main process, dépendances injectables) + écriture au boot dans
+`<userData>/config/provider-credentials.json` clé `openclaw` via
+`saveProviderCredential`. Ordre : `$OPENCLAW_GATEWAY_TOKEN` → CLI
+`openclaw config get gateway.auth.token` → fichiers env (`~/.openclaw/.env`,
+`$OPENCLAW_STATE_DIR/.env`, `~/.config/openclaw/gateway.env`) → littéral
+`gateway.auth.token` (`mode` `password`/`none`/`trusted-proxy` = pas de token).
+Chemins Windows/Linux documentés dans `docs/porting/openclaw-token-audit.md`.
+Constat terrain **OpenClaw 2026.7.1-2** : le CLI renvoie la sentinelle
+`__OPENCLAW_REDACTED__` (jamais le secret) → ignorée, la config littérale (ou
+les fichiers env) est la source effective. Aucun log du token, aucune route
+HTTP nouvelle ; cas d'échec = `null`, la saisie manuelle reste le fallback.
+
 ## 8. Phases d'execution
 
 ### Phase A — Joindre Electron depuis le Mobile

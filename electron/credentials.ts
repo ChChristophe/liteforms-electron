@@ -57,6 +57,14 @@ function writeCredential(path: string, provider: string, apiKey: string): boolea
   }
 }
 
+/** Persists one provider credential into `<dir>/provider-credentials.json`
+ * (same file/format as the IPC setter). Used by the boot-time OpenClaw token
+ * discovery (POC §7.1). The raw key is never logged. */
+export function saveProviderCredential(dir: string, provider: string, apiKey: string): boolean {
+  if (provider.length === 0 || apiKey.length === 0) return false;
+  return writeCredential(resolveCredentialsPath(dir), provider, apiKey);
+}
+
 /** Registers the get/set credential IPC handlers. `dir` is the same
  * `<userData>/config` folder handed to the Next server via
  * LITEFORMS_DEVICE_CONFIG_DIR. The raw key is never logged — only provider ids

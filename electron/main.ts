@@ -3,7 +3,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, appendFileSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { registerNativeBridgeIpc } from "./nativeBridge";
-import { registerCredentialIpc, PROVIDER_CREDENTIALS_FILE_NAME } from "./credentials";
+import { registerCredentialIpc, saveProviderCredential, PROVIDER_CREDENTIALS_FILE_NAME } from "./credentials";
+import { resolveOpenClawGatewayToken } from "./openclaw/gatewayToken";
 import { redactDiagnosticLine } from "./diagnosticRedact";
 import { createNextServerEnv, isHttpServerUp, LITEFORMS_SERVER_PORT, resolveServerHost, resolveStandaloneDir, waitForHttpServer } from "./nextServer";
 import { bootstrapProvisioning, type ProvisioningBootstrap } from "./wifi/provisioningBootstrap";
@@ -650,6 +651,23 @@ app.whenReady().then(async () => {
   // (LITEFORMS_CREDENTIALS_PATH). Registered before the window loads so the
   // preload's credential calls always find a handler.
   registerCredentialIpc(ipcMain, deviceConfigDirPath(), writeDiagnostic);
+
+  // OpenClaw local token discovery (POC §7.1): read the token of the local
+  // OpenClaw install so the user no longer pastes it. Strictly local — the
+  // value is never logged, never served over HTTP and never sent to the Mobile
+  // (provider-status keeps reporting only `configured` + a mask). No local
+  // token -> do nothing; the renderer's manual entry stays as fallback.
+  try {
+    const resolvedToken = await resolveOpenClawGatewayToken();
+    if (resolvedToken) {
+      const persisted = saveProviderCredential(deviceConfigDirPath(), "openclaw", resolvedToken.token);
+      writeDiagnostic(`[openclaw] gateway token found via ${resolvedToken.source}; persisted=${persisted}`);
+    } else {
+      writeDiagnostic("[openclaw] gateway token not found (manual entry remains available)");
+    }
+  } catch (error) {
+    writeDiagnostic(`[openclaw] gateway token resolution failed (${String(error)})`);
+  }
 
   if (process.platform === "win32") {
     app.setAppUserModelId("org.liteforms.web");
