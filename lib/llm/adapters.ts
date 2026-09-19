@@ -16,6 +16,26 @@ const CLOUD_PROVIDER_IDS = new Set<string>([
   "cerebras", "nvidia", "openrouter", "groq", "together", "fireworks", "qwen"
 ]);
 
+// Providers whose gateway keeps server-side conversation memory keyed by a
+// session id (OpenClaw's `user` field). For these we send a stable
+// per-conversation id plus only the latest user message, so the gateway
+// reuses its warm session instead of re-preparing one per request. All other
+// providers stay stateless and keep receiving the full history.
+const STATEFUL_SESSION_PROVIDERS = new Set<string>(["openclaw"]);
+
+type StatefulSession = {
+  sessionUser: string;
+  lastUserMessage: ChatMessage;
+};
+
+function resolveStatefulSession(request: ChatRequest): StatefulSession | null {
+  if (!request.conversationId) return null;
+  if (!STATEFUL_SESSION_PROVIDERS.has(request.config.provider)) return null;
+  const lastUserMessage = [...request.messages].reverse().find((message) => message.role === "user");
+  if (!lastUserMessage) return null;
+  return { sessionUser: `liteforms-${request.conversationId}`, lastUserMessage };
+}
+
 export function createLlmAdapter(input: CreateAdapterInput): LlmAdapter {
   const config = normalizeProviderConfig(input.config);
   if (config.provider === "google-live" || config.provider === "openai-realtime") {
@@ -103,11 +123,18 @@ async function* streamOpenAiCompatible(request: ChatRequest, fetchImpl: FetchLik
   if (config.credential) {
     headers.Authorization = `Bearer ${config.credential}`;
   }
+  const session = resolveStatefulSession(request);
+  const outboundMessages = session ? [session.lastUserMessage] : messages;
 
   const response = await fetchImpl(`${trimTrailingSlash(baseUrl)}/chat/completions`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ model: config.model, messages, stream: true })
+    body: JSON.stringify({
+      model: config.model,
+      messages: outboundMessages,
+      stream: true,
+      ...(session ? { user: session.sessionUser } : {})
+    })
   });
 
   yield* readTextStream(response, parseOpenAiCompatibleSseLine, config);

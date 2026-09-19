@@ -93,6 +93,93 @@ describe("LLM adapters", () => {
     );
   });
 
+  it("reuses an OpenClaw session by sending a per-conversation user and only the latest user message", async () => {
+    const fetchMock = vi.fn(async () =>
+      streamResponse(['data: {"choices":[{"delta":{"content":"Claw"}}]}\n\n', "data: [DONE]\n\n"])
+    );
+    const config: BaseProviderConfig = {
+      provider: "openclaw",
+      model: "openclaw/default",
+      baseUrl: "http://127.0.0.1:18789/v1",
+      credential: "gateway-token"
+    };
+    const adapter = createLlmAdapter({ config, fetch: fetchMock });
+
+    await collect(
+      adapter.streamText({
+        config,
+        conversationId: "abc-123",
+        messages: [
+          { role: "user", content: "First question" },
+          { role: "assistant", content: "First answer" },
+          { role: "user", content: "Second question" }
+        ]
+      })
+    );
+
+    const body = JSON.parse(((fetchMock.mock.calls as unknown[][])[0]?.[1] as { body: string }).body) as {
+      messages: { role: string; content: string }[];
+      user?: string;
+    };
+    expect(body.user).toBe("liteforms-abc-123");
+    expect(body.messages).toEqual([{ role: "user", content: "Second question" }]);
+  });
+
+  it("keeps OpenClaw stateless behavior when no conversation id is provided", async () => {
+    const fetchMock = vi.fn(async () =>
+      streamResponse(['data: {"choices":[{"delta":{"content":"Claw"}}]}\n\n', "data: [DONE]\n\n"])
+    );
+    const config: BaseProviderConfig = {
+      provider: "openclaw",
+      model: "openclaw/default",
+      baseUrl: "http://127.0.0.1:18789/v1"
+    };
+    const adapter = createLlmAdapter({ config, fetch: fetchMock });
+
+    const history = [
+      { role: "user" as const, content: "First question" },
+      { role: "assistant" as const, content: "First answer" },
+      { role: "user" as const, content: "Second question" }
+    ];
+    await collect(adapter.streamText({ config, messages: history }));
+
+    const body = JSON.parse(((fetchMock.mock.calls as unknown[][])[0]?.[1] as { body: string }).body) as {
+      messages: unknown[];
+      user?: string;
+    };
+    expect(body.user).toBeUndefined();
+    expect(body.messages).toHaveLength(3);
+  });
+
+  it("never sends a session user for stateless providers even with a conversation id", async () => {
+    const fetchMock = vi.fn(async () =>
+      streamResponse(['data: {"choices":[{"delta":{"content":"Direct"}}]}\n\n', "data: [DONE]\n\n"])
+    );
+    const adapter = createLlmAdapter({
+      config: { provider: "openai", model: "gpt-4.1-mini", credential: "sk-test" },
+      fetch: fetchMock
+    });
+
+    await collect(
+      adapter.streamText({
+        config: { provider: "openai", model: "gpt-4.1-mini", credential: "sk-test" },
+        conversationId: "abc-123",
+        messages: [
+          { role: "user", content: "First question" },
+          { role: "assistant", content: "First answer" },
+          { role: "user", content: "Second question" }
+        ]
+      })
+    );
+
+    const body = JSON.parse(((fetchMock.mock.calls as unknown[][])[0]?.[1] as { body: string }).body) as {
+      messages: unknown[];
+      user?: string;
+    };
+    expect(body.user).toBeUndefined();
+    expect(body.messages).toHaveLength(3);
+  });
+
   it("explains OpenClaw 404 responses as a disabled OpenAI-compatible endpoint", async () => {
     const fetchMock = vi.fn(async () => new Response("not found", { status: 404 }));
     const config: BaseProviderConfig = {

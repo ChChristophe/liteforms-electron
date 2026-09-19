@@ -1290,6 +1290,208 @@ describe("ChatPanel streaming TTS pipeline", () => {
     });
     expect(synthesize).toHaveBeenCalledWith("The score is 9 point 5 out of 10.");
   });
+
+  it("bounds concurrent TTS synthesis to two while preserving order", async () => {
+    vi.mocked(createLlmAdapter).mockReturnValueOnce({
+      id: "browser-local-gemma",
+      streamText: vi.fn().mockReturnValue(
+        (async function* () {
+          yield "One. Two. Three. Four.";
+        })()
+      )
+    });
+
+    let active = 0;
+    let maxActive = 0;
+    const started: string[] = [];
+    const resolvers: Array<() => void> = [];
+    const synthesize = vi.fn((text: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      started.push(text);
+      return new Promise<{ audio: ArrayBuffer; mimeType: string }>((resolve) => {
+        resolvers.push(() => {
+          active -= 1;
+          resolve({ audio: new ArrayBuffer(4), mimeType: "audio/wav" });
+        });
+      });
+    });
+    vi.mocked(createTtsAdapter).mockReturnValueOnce({ synthesize, provider: "kokoro" });
+
+    renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Type a message…"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
+    expect(maxActive).toBe(2);
+    expect(started).toEqual(["One.", "Two."]);
+
+    // Both slots busy: a third sentence must not start yet.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(synthesize).toHaveBeenCalledTimes(2);
+
+    // Freeing one slot starts the next sentence in reading order.
+    await act(async () => {
+      resolvers[0]();
+    });
+    await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(3));
+    expect(maxActive).toBe(2);
+    expect(started).toEqual(["One.", "Two.", "Three."]);
+
+    await act(async () => {
+      resolvers[1]();
+    });
+    await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(4));
+    expect(maxActive).toBe(2);
+    expect(started).toEqual(["One.", "Two.", "Three.", "Four."]);
+
+    await act(async () => {
+      resolvers[2]();
+      resolvers[3]();
+    });
+  });
+
+  it("frees a synthesis slot when a synthesis rejects and surfaces the error", async () => {
+    vi.mocked(createLlmAdapter).mockReturnValueOnce({
+      id: "browser-local-gemma",
+      streamText: vi.fn().mockReturnValue(
+        (async function* () {
+          yield "One. Two. Three.";
+        })()
+      )
+    });
+
+    const resolvers: Array<() => void> = [];
+    const synthesize = vi.fn((text: string) => {
+      if (text === "One.") return Promise.reject(new Error("synthesis boom"));
+      return new Promise<{ audio: ArrayBuffer; mimeType: string }>((resolve) => {
+        resolvers.push(() => resolve({ audio: new ArrayBuffer(4), mimeType: "audio/wav" }));
+      });
+    });
+    vi.mocked(createTtsAdapter).mockReturnValueOnce({ synthesize, provider: "kokoro" });
+
+    renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Type a message…"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    // The rejection frees its slot, so the queued third sentence still starts.
+    await waitFor(() => expect(synthesize).toHaveBeenCalledTimes(3));
+    expect(synthesize).toHaveBeenNthCalledWith(1, "One.");
+    expect(synthesize).toHaveBeenNthCalledWith(3, "Three.");
+    await waitFor(() => expect(screen.getByText("synthesis boom")).toBeInTheDocument());
+
+    await act(async () => {
+      for (const resolve of resolvers) resolve();
+    });
+  });
+
+  it("stops synthesizing at stream end and starts the next turn with a fresh scheduler", async () => {
+    vi.mocked(createLlmAdapter).mockReturnValueOnce({
+      id: "browser-local-gemma",
+      streamText: vi.fn().mockReturnValue(
+        (async function* () {
+          yield "One. Two. Three.";
+        })()
+      )
+    });
+
+    const synthesizeTurn1 = vi
+      .fn()
+      .mockResolvedValue({ audio: new ArrayBuffer(4), mimeType: "audio/wav" });
+    vi.mocked(createTtsAdapter).mockReturnValueOnce({ synthesize: synthesizeTurn1, provider: "kokoro" });
+
+    renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Type a message…"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(synthesizeTurn1).toHaveBeenCalledTimes(3));
+    // Let the drain task settle; no ghost synthesis is started after the end.
+    await act(async () => { await Promise.resolve(); });
+    expect(synthesizeTurn1).toHaveBeenCalledTimes(3);
+
+    // Turn 2 gets its own scheduler: it starts at full capacity immediately.
+    vi.mocked(createLlmAdapter).mockReturnValueOnce({
+      id: "browser-local-gemma",
+      streamText: vi.fn().mockReturnValue(
+        (async function* () {
+          yield "Alpha. Beta.";
+        })()
+      )
+    });
+    const synthesizeTurn2 = vi
+      .fn()
+      .mockResolvedValue({ audio: new ArrayBuffer(4), mimeType: "audio/wav" });
+    vi.mocked(createTtsAdapter).mockReturnValueOnce({ synthesize: synthesizeTurn2, provider: "kokoro" });
+
+    fireEvent.change(screen.getByPlaceholderText("Type a message…"), { target: { value: "again" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(synthesizeTurn2).toHaveBeenCalledWith("Alpha."));
+    expect(synthesizeTurn2).toHaveBeenCalledWith("Beta.");
+  });
+
+  it("cancels queued synthesis after a stream abort and restarts the next turn with a fresh scheduler", async () => {
+    // Turn 1: three sentences are queued, then the LLM stream throws. Two
+    // syntheses are in flight, the third stays in the scheduler queue.
+    vi.mocked(createLlmAdapter).mockReturnValueOnce({
+      id: "browser-local-gemma",
+      streamText: vi.fn().mockReturnValue(
+        (async function* () {
+          yield "One. Two. Three.";
+          throw new Error("stream boom");
+        })()
+      )
+    });
+
+    const turn1Resolvers: Array<() => void> = [];
+    const synthesizeTurn1 = vi.fn(() => {
+      return new Promise<{ audio: ArrayBuffer; mimeType: string }>((resolve) => {
+        turn1Resolvers.push(() => resolve({ audio: new ArrayBuffer(4), mimeType: "audio/wav" }));
+      });
+    });
+    vi.mocked(createTtsAdapter).mockReturnValueOnce({ synthesize: synthesizeTurn1, provider: "kokoro" });
+
+    renderPanel();
+    fireEvent.change(screen.getByPlaceholderText("Type a message…"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(screen.getByText("stream boom")).toBeInTheDocument());
+    expect(synthesizeTurn1).toHaveBeenCalledTimes(2);
+    expect(synthesizeTurn1).toHaveBeenNthCalledWith(1, "One.");
+    expect(synthesizeTurn1).toHaveBeenNthCalledWith(2, "Two.");
+
+    // Turn 2 starts while turn 1's syntheses are still unresolved: a fresh
+    // scheduler runs at full capacity instead of queueing behind stale slots.
+    vi.mocked(createLlmAdapter).mockReturnValueOnce({
+      id: "browser-local-gemma",
+      streamText: vi.fn().mockReturnValue(
+        (async function* () {
+          yield "Alpha. Beta.";
+        })()
+      )
+    });
+    const synthesizeTurn2 = vi
+      .fn()
+      .mockResolvedValue({ audio: new ArrayBuffer(4), mimeType: "audio/wav" });
+    vi.mocked(createTtsAdapter).mockReturnValueOnce({ synthesize: synthesizeTurn2, provider: "kokoro" });
+
+    fireEvent.change(screen.getByPlaceholderText("Type a message…"), { target: { value: "again" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(synthesizeTurn2).toHaveBeenCalledWith("Alpha."));
+    expect(synthesizeTurn2).toHaveBeenCalledWith("Beta.");
+
+    // Freeing the aborted turn's slots must NOT launch the queued "Three.":
+    // no ghost synthesis survives the failed stream.
+    await act(async () => {
+      for (const resolve of turn1Resolvers) resolve();
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(synthesizeTurn1).toHaveBeenCalledTimes(2);
+    expect(synthesizeTurn1).not.toHaveBeenCalledWith("Three.");
+  });
 });
 
 describe("ChatPanel speech input provider readout", () => {

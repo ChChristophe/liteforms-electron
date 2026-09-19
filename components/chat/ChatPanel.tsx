@@ -144,6 +144,32 @@ function realtimeProviderLabel(provider: "google-live" | "openai-realtime") {
   return provider === "google-live" ? "Google Live" : "OpenAI Realtime";
 }
 
+// Cap concurrent TTS synthesis at 2: the next sentence(s) can start
+// synthesizing while the LLM is still streaming (early clips resolve fast),
+// without flooding the TTS provider or the local worker with every remaining
+// sentence at once.
+const TTS_MAX_CONCURRENT_SYNTH = 2;
+
+type BoundedSchedulerState = { inFlight: number; pending: Array<() => void>; aborted?: boolean };
+
+function runBounded<T>(task: () => Promise<T>, state: BoundedSchedulerState): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = () => {
+      // Aborted turn (LLM stream failed): never launch a queued synthesis, so
+      // no ghost TTS call survives the failed turn.
+      if (state.aborted) return;
+      state.inFlight += 1;
+      task().then(resolve, reject).finally(() => {
+        state.inFlight -= 1;
+        const next = state.pending.shift();
+        if (next) next();
+      });
+    };
+    if (state.inFlight < TTS_MAX_CONCURRENT_SYNTH) start();
+    else state.pending.push(start);
+  });
+}
+
 function SettingsReadout({ label, value }: { label: string; value: string }) {
   return (
     <div className="settings-readout" role="group" aria-label={label}>
@@ -218,6 +244,8 @@ export function ChatPanel({
             }
         : { provider: "none" })
   );
+  // Stable per-mount id: OpenClaw reuses one gateway session keyed by this id.
+  const [conversationId] = useState(() => createConversationId());
   const [micMode, setMicMode] = useState<MicMode>("dynamic");
   const [micModeMenuOpen, setMicModeMenuOpen] = useState(false);
   // Wake word armed (bundle bridge): exclusive voice mode, manual mic disabled.
@@ -631,8 +659,11 @@ export function ChatPanel({
       let responseText = "";
       const ttsBuffer = new IncrementalSpeechBuffer();
       // synthQueue holds in-flight synthesis Promises started as each sentence
-      // is detected — concurrently with the LLM still streaming.
+      // is detected — concurrently with the LLM still streaming. Synthesis is
+      // bounded (TTS_MAX_CONCURRENT_SYNTH) so early clips resolve fast instead
+      // of competing with every later sentence at once.
       const synthQueue: Promise<TtsResult>[] = [];
+      const ttsScheduler: BoundedSchedulerState = { inFlight: 0, pending: [] };
       let safeCursor = 0;
       let chunkCount = 0;
 
@@ -691,7 +722,7 @@ export function ChatPanel({
           return;
         }
         setLastTtsDebug(`TTS: "${prepared}"`);
-        synthQueue.push(ttsAdapter.synthesize(prepared));
+        synthQueue.push(runBounded(() => ttsAdapter.synthesize(prepared), ttsScheduler));
         signal(); // wake drain task immediately
       };
 
@@ -703,7 +734,8 @@ export function ChatPanel({
             pronouns: character.pronouns,
             personality: character.personality
           },
-          messages: nextMessages
+          messages: nextMessages,
+          conversationId
         })) {
           responseText += chunk;
           chunkCount++;
@@ -724,8 +756,11 @@ export function ChatPanel({
           }
         }
       } catch (caught) {
-        // LLM stream failed — abort the drain task and re-throw
+        // LLM stream failed — abort the drain task, drop the queued syntheses
+        // (no ghost TTS call after the failed turn) and re-throw.
         drainAborted = true;
+        ttsScheduler.aborted = true;
+        ttsScheduler.pending.length = 0;
         signal();
         throw caught;
       }
@@ -1597,6 +1632,13 @@ async function playAudioBlob(audio: Blob) {
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+function createConversationId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `conv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function persistLocalModelMetadata(downloadedIds: LocalModelId[]) {

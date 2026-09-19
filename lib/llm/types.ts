@@ -46,6 +46,7 @@ export type ChatRequest = {
   config: BaseProviderConfig;
   persona?: CharacterPersona;
   messages: ChatMessage[];
+  conversationId?: string;
 };
 
 export type FetchLike = typeof fetch;
