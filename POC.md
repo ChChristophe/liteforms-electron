@@ -318,7 +318,7 @@ Cette direction remplace la question ouverte « lire le fichier OpenClaw ou
 non ? » : oui, c'est le comportement cible de l'architecture finale, avec les
 garde-fous ci-dessus.
 
-**Implémentation (19/09/2026, non validée terrain)** : `electron/openclaw/gatewayToken.ts`
+**Implémentation (19/09/2026, validée terrain 19/09)** : `electron/openclaw/gatewayToken.ts`
 (résolveur main process, dépendances injectables) + écriture au boot dans
 `<userData>/config/provider-credentials.json` clé `openclaw` via
 `saveProviderCredential`. Ordre : `$OPENCLAW_GATEWAY_TOKEN` → CLI
