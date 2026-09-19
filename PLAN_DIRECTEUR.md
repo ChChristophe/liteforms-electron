@@ -158,34 +158,34 @@ Fichiers des commits comparés entre l'arbre Electron actuel, la base commune `7
 | # | Commit | Contenu | Diff | Faisa | Notes |
 |---|---|---|---|---|---|
 | 1 | `4952eed` | Init + docs `.md` | 1 | N/A | documents seulement |
-| 2 | `985278b` | Update provider + erreurs système | 2 | 10 | probablement déjà couvert par la base Electron (onboarding plus riche) |
-| 3 | `b124d76` | Lipsync OpenAI TTS | 3 | 9 | ≈ chaîne lip-sync LKG déjà en place (`vrmRuntimeAnimator` divergé) |
+| 2 | `985278b` | Update provider + erreurs système | ✅ | 10 | **fait 19/09** : `describeHttpError` (deepgram/elevenlabs/openai-compatible/xai) + `gpt-4o-transcribe-diarize` (`chunking_strategy:auto`, sans `prompt`/`language`) ; options de modèles (#4 `gpt-realtime-2.1*`, #2 `gpt-transcribe`/`diarize`/`whisper-1`) **déjà présentes** côté Electron — détail : `docs/porting/jarvis-asr-errors-audit.md`. Le reste était déjà couvert par la base Electron (onboarding plus riche) |
+| 3 | `b124d76` | Lipsync OpenAI TTS | ✅ | 9 | **couvert** : chaîne lip-sync LKG déjà en place, aucun port — ≈ chaîne lip-sync LKG déjà en place (`vrmRuntimeAnimator` divergé) |
 | 4 | `aba7316` | Modale vitesse d'élocution OpenAI | ✅ | **fait 19/09** (non validé terrain) | porté (`OnboardingModal.tsx`) ; **la vitesse suit la voix réellement utilisée** et est pilotée par le Mobile via `providers.tts.speed` (plage par provider : openai `[0.25,4]`, elevenlabs `[0.7,1.2]`) **et** `providers.llm.speed` (`openai-realtime` `[0.25,1.5]` → `session.audio.output.speed`, `google-live` sans champ) — contrat `protocol/DEVICE_API.md` §Bloc vitesse, 19/09. Le réglage desktop devient un **défaut écrasé à chaque push** (téléphone = source de vérité). Validation appareil + mapping dans `pocConfig`/`pocClient`, moteur `openAiRealtime` + tests. Détail : `docs/porting/jarvis-openclaw-session-tts-speed-audit.md` |
 | 5 | `95b2784` | Meilleur idle loop + foot place | ✅ | **fait 18/09** | **L'audit l'avait classé à tort « équivalent déjà présent »** : `VrmIdleAnimator` n'était qu'un lecteur de boucle, sans fidgets ni interruption. Porté fidèlement : `lib/avatar/idleChoreographer.ts` (+ test), `IDLE_FIDGET_ANIMATION_URLS`, `setEnabled` foot-plant, `setFootPlantEnabled`, câblage `AvatarScene`. C'est la base du `playClipNow` de la cue wake word. |
 | 6 | `ff26033` | Depth VRM dans l'alcove | ✅ | **clos 18/09 sans port** | la profondeur est pilotée par `avatar.pose.depth` (Mobile → device-config → appliance), validé terrain. L'ancre `LOOKING_GLASS_FOCAL_TARGET.z` reste `0.234` (rendu LKG validé) : ne PAS porter la valeur web `0.123`. |
 | 7 | `050c195` | Recenter hips animation | ✅ | **fait 18/09** | `recenterHipsTranslation` dans `vrmAnimationLoader.ts` (+ tests web-parité) : plus de dérive latérale de l'idle. |
 | 8 | `a5c88bb` | **Alcove color** | ✅ | **fait** (4 effectif) | porté + `/hologram` (§1.5) ; **fix 15/09** (`8461e38`) : le port écrivait le tint sur l'`AmbientLight` (rendu dilué, jalons jamais intenses) — root cause : `applyEnvironmentTint` absent du loader ; rétabli web-parité (`environmentLoader`/`AvatarScene`/`environmentConfig` strict hex+null ; matériau teinté, map supprimée, ambient fixe `#fff6e5`) |
 | 9 | `bf978b2` | Emotion en face | ✅ | **partiel** (5 effectif) | mood **appliqué** : `moodConfig` (storage, copy web-parité), `applyVrmMoodPreset` (`vrmExpressionController.applyVrmExpression(1)`, web-parité), `AvatarScene` prop `expressionPreset` (live + post-load), `/hologram` suit `liteforms.moodConfig` via storage-event, chaîne device-config (hook `onMoodPreset` + `saveMoodConfig` + `applied.push("mood")`). **Audit portage** : `moodConfig` conservé tel quel (copie fidèle) ; `applyVrmMoodPreset` conservé (réutilise les fonctions déjà présentes de la copie Electron du controller) ; pattern AvatarScene réimplémenté sur la structure divergée (ref + effect, même pattern que `environmentTintRef`). **Volontairement non porté** : l'UI desktop (§3.1) — `MOOD_OPTIONS`/select `ChatPanel` et handlers `app/page.tsx` web ; le mood vient exclusivement de `POST /api/device-config` (Mobile). **Bug latent corrigé au passage** : `avatar.mood: null` (Mobile « Défaut ») était rejeté en 400 — null/unknown préréglage deviennent warning + mood ignoré, jamais de 400. **Pose : implémentée le 17/09** (`lib/avatar/avatarPose.ts` + `lib/storage/poseConfig.ts` + prop `AvatarScene` + hook `onPose`, `/hologram` via storage-event) — validation terrain à faire ; sémantique dans `protocol/DEVICE_API.md` §Bloc `avatar.pose` |
-| 10 | `922809e` | Fix bugs core | 3 | 8 | re-corriger manuellement un `ChatPanel` fortement divergé |
-| 11 | `5086b76` | **Bundle OpenWakeWord** | 7 | 8 | gros kit (moteur ort + modèles `.onnx` + worklet + featureFlags) ; `onnxruntime-web@1.21` **déjà en deps** ; threading wasm → voir §6.4 |
-| 12 | `a72535d` | UI wake word + fixes activation | 3 | 9 | dépend du bundle #11 |
-| 13 | `bc9d76e` | Sélection modèle + persistance | 3 | 9 | `wakeWordConfig`/store |
-| 14 | `351b034` | Câblage UI wake word | 3 | 9 | `ChatPanel` divergé |
-| 15 | `f0e4ee9` | POC panel étendu | 2 | 9 | composant+tests |
-| 16 | `2033482` | Cue wake word (blink alcove + greeting) | 4 | 9 | à adapter à l'animator Electron (`idleChoreographer` ≠ absence Electron) |
-| 17 | `bf81276` | Cue configurable | 3 | 9 | storage `wakeWordConfig` |
+| 10 | `922809e` | Fix bugs core | ✅ | 8 | **audité 19/09** : 3/4 correctifs déjà présents ; seul un `console.error` de diagnostic manquait (pas un bug) — re-corriger manuellement un `ChatPanel` fortement divergé |
+| 11 | `5086b76` | **Bundle OpenWakeWord** | ✅ | 8 | **fait + validé terrain 18/09** (bundle OpenWakeWord) — cf. §15/§16. gros kit (moteur ort + modèles `.onnx` + worklet + featureFlags) ; `onnxruntime-web@1.21` **déjà en deps** ; threading wasm → voir §6.4 |
+| 12 | `a72535d` | UI wake word + fixes activation | ✅ | 9 | **fait + validé terrain 18/09** (UI) — dépend du bundle #11 |
+| 13 | `bc9d76e` | Sélection modèle + persistance | ✅ | 9 | **fait + validé terrain 18/09** (sélection+persistance) — `wakeWordConfig`/store |
+| 14 | `351b034` | Câblage UI wake word | ✅ | 9 | **fait + validé terrain 18/09** (câblage) — `ChatPanel` divergé |
+| 15 | `f0e4ee9` | POC panel étendu | ✅ | 9 | **fait + validé terrain 18/09** (POC panel) — composant+tests |
+| 16 | `2033482` | Cue wake word (blink alcove + greeting) | ✅ | 9 | **fait + validé terrain 18/09** (cue alcôve) — à adapter à l'animator Electron (`idleChoreographer` ≠ absence Electron) |
+| 17 | `bf81276` | Cue configurable | ✅ | 9 | **fait + validé terrain 18/09** (cue configurable) — storage `wakeWordConfig` |
 | 18 | `3948403` | Doc études | 1 | N/A | documents |
-| 19 | `949dee2` | Sessions OpenClaw réutilisées (conversation ids) | 4 | 9 | `adapters.ts`/`types.ts` divergés |
-| 20 | `a3c1f90` | Conversation id stable → LLM | 3 | 9 | `ChatPanel` |
-| 21 | `a6dd16a` | Max 2 TTS concurrents | 3 | 9 | throttling dans le `ChatPanel` divergé |
-| 22 | `e1e0c13` | Strip markdown (display + parlé) | 2 | 10 | logique pure (`lib/llm/output.ts`, `lib/speech/tts.ts`) |
+| 19 | `949dee2` | Sessions OpenClaw réutilisées (conversation ids) | ✅ | 9 | **fait 19/09** (session OpenClaw réutilisée) — `adapters.ts`/`types.ts` divergés |
+| 20 | `a3c1f90` | Conversation id stable → LLM | ✅ | 9 | **fait 19/09** (session OpenClaw réutilisée) — `ChatPanel` |
+| 21 | `a6dd16a` | Max 2 TTS concurrents | ✅ | 9 | **fait 19/09** (borne TTS max 2 + cleanup d'abort) — throttling dans le `ChatPanel` divergé |
+| 22 | `e1e0c13` | Strip markdown (display + parlé) | ✅ | 10 | **fait 17/09** (strip markdown) — logique pure (`lib/llm/output.ts`, `lib/speech/tts.ts`) |
 | 23 | `21ac88a` | Doc suite | 1 | N/A | documents |
-| 24 | `28cc967` | **Function calling + OpenClaw + audio utils** | 6 | 9 | routes Next **tournent dans le standalone** ✓ ; `audioUtils` ≈ `audioPlayback` existant ; tools à réinjecter dans `googleLive`/`openAiRealtime` + `ChatPanel`/holo ; `openclawGatewayToken` |
-| 25 | `de2aed2` | TimerManager | 2 | 10 | module 100 % client |
-| 26 | `f0884a7` | Tools timer realtime | 3 | 9 | fournisseurs realtime |
-| 27 | `a9df03e` | Timers dans ChatPanel (chime + notif) | 4 | 9 | UI + audio chime |
-| 28 | `e1037ce` | get_current_date | 3 | 9 | après l'infra #24 |
-| 29 | `9fc237f` | calculate + parser sûr | 3 | 9 | parser pur + route |
+| 24 | `28cc967` | **Function calling + OpenClaw + audio utils** | ✅ | 9 | **fait 17/09** (function calling, détail §13) — routes Next **tournent dans le standalone** ✓ ; `audioUtils` ≈ `audioPlayback` existant ; tools réinjectés dans `googleLive`/`openAiRealtime` + `ChatPanel`/holo ; `openclawGatewayToken`. Note : `openclaw_web_search` reste **volontairement exclu** |
+| 25 | `de2aed2` | TimerManager | ✅ | 10 | **fait 17/09** (timers, détail §13) — module 100 % client |
+| 26 | `f0884a7` | Tools timer realtime | ✅ | 9 | **fait 17/09** (timers, détail §13) — fournisseurs realtime |
+| 27 | `a9df03e` | Timers dans ChatPanel (chime + notif) | ✅ | 9 | **fait 17/09** (timers, détail §13) — UI + audio chime |
+| 28 | `e1037ce` | get_current_date | ✅ | 9 | **fait 17/09** (date, détail §13) — après l'infra #24 |
+| 29 | `9fc237f` | calculate + parser sûr | ✅ | 9 | **fait 17/09** (calculate, détail §13) — parser pur + route |
 
 > **⚠️ Commits hors audit, retrouvés le 18/09** (entre la base `7fa7670` et le
 > premier commit audité `4952eed`, donc jamais listés) : `bbf7a74` « mic
@@ -726,7 +726,8 @@ recovery : bouton physique §6.7.
 **Portage (workspace `C:\dev\liteforms-electron`)**
 - [x] ~~Portendre 22 (strip markdown) + 25/26/28/29 (parser + timers + function calling), groupe « logique pure ».~~ **FAIT (17/09, non validé terrain)** : strip markdown (dédup `getSafeTextForTts`), parser `calculate` (`%` de la base), `lib/timer/` + `timerStore`, catalogue d'outils + registre, câblage adaptateurs + `ChatPanel`, chime. Détail : §13.
 - [x] ~~Port `6`/`7` (retunes Alacove/hips)~~ **FAIT 18/09** : #7 `recenterHipsTranslation` porté (+ tests) ; #6 clos sans port (profondeur via `avatar.pose.depth`, ancre LKG `0.234` conservée).
-- [x] ~~Port `19`/`20` (conversation ids OpenClaw)~~ **FAIT (19/09, non validé terrain)** : session OpenClaw réutilisée (id stable par montage du ChatPanel, seul le dernier message `user` envoyé au gateway ; sans id = stateless). Détail + tests : `docs/porting/jarvis-openclaw-session-tts-speed-audit.md`. Reste `2`.
+- [x] ~~Port `19`/`20` (conversation ids OpenClaw)~~ **FAIT (19/09, non validé terrain)** : session OpenClaw réutilisée (id stable par montage du ChatPanel, seul le dernier message `user` envoyé au gateway ; sans id = stateless). Détail + tests : `docs/porting/jarvis-openclaw-session-tts-speed-audit.md`.
+- [x] ~~Port `2` (erreurs STT + modèle diarize)~~ **FAIT 19/09** : `describeHttpError` (deepgram/elevenlabs/openai-compatible/xai) + `gpt-4o-transcribe-diarize` (`chunking_strategy:auto`, sans `prompt`/`language`) ; options de modèles (#4/#2) déjà présentes. Détail : `docs/porting/jarvis-asr-errors-audit.md`.
 - [ ] Port `9` (emotion : `moodConfig` + controller + UI).
 - [x] ~~Port du wake word `11`→`17`~~ **FAIT + validé terrain 18/09** : bundle OpenWakeWord (phase 1), intégration ChatPanel (phase 2), `IdleChoreographer` (#5), cue visuelle (#16) + réglages depuis le Mobile (tranches 3/4). ORT **threaded** (COOP/COEP déjà en place → §6.4 corrigé), un seul `MediaStream` partagé (§6.5). Détail : §15/§16.
 - [ ] À chaque groupe : tests + lint + tsc + build.

@@ -92,7 +92,7 @@ async function transcribeDeepgram(
     }
   );
   if (!response.ok) {
-    throw new Error(`Deepgram STT failed with ${response.status}`);
+    throw new Error(`Deepgram STT failed (${await describeHttpError(response)})`);
   }
   const body = await response.json();
   return {
@@ -120,7 +120,7 @@ async function transcribeElevenLabs(
     body: formData
   });
   if (!response.ok) {
-    throw new Error(`ElevenLabs STT failed with ${response.status}`);
+    throw new Error(`ElevenLabs STT failed (${await describeHttpError(response)})`);
   }
   const body = await response.json();
   return {
@@ -139,8 +139,11 @@ async function transcribeOpenAiCompatible(
   const formData = new FormData();
   formData.set("file", audio, inferRecordingFileName(audio));
   appendFormField(formData, "model", config.model);
-  appendFormField(formData, "language", config.language);
-  appendFormField(formData, "prompt", config.prompt);
+  // gpt-4o-transcribe-diarize rejects prompt/language and requires chunking_strategy for >30s inputs
+  const isDiarizeModel = config.model.startsWith("gpt-4o-transcribe-diarize");
+  appendFormField(formData, "language", isDiarizeModel ? undefined : config.language);
+  appendFormField(formData, "prompt", isDiarizeModel ? undefined : config.prompt);
+  if (isDiarizeModel) formData.set("chunking_strategy", "auto");
 
   const response = await fetchImpl(`${trimSlash(config.baseUrl)}/audio/transcriptions`, {
     method: "POST",
@@ -148,7 +151,7 @@ async function transcribeOpenAiCompatible(
     body: formData
   });
   if (!response.ok) {
-    throw new Error(`STT provider failed with ${response.status}`);
+    throw new Error(`STT provider failed (${await describeHttpError(response)})`);
   }
   const body = await response.json();
   return {
@@ -175,7 +178,7 @@ async function transcribeXai(
     body: formData
   });
   if (!response.ok) {
-    throw new Error(`xAI STT failed with ${response.status}`);
+    throw new Error(`xAI STT failed (${await describeHttpError(response)})`);
   }
   const body = await response.json();
   return {
@@ -198,6 +201,17 @@ function normalizeOptionalString(input: string | undefined) {
 function appendFormField(formData: FormData, name: string, value: string | undefined) {
   const trimmed = normalizeOptionalString(value);
   if (trimmed) formData.set(name, trimmed);
+}
+
+async function describeHttpError(response: Response) {
+  let detail = "";
+  try {
+    const body = (await response.json()) as { error?: { message?: unknown } } | null;
+    if (typeof body?.error?.message === "string") detail = body.error.message;
+  } catch {
+    // non-JSON body → keep status only
+  }
+  return detail ? `${response.status}: ${detail}` : `${response.status}`;
 }
 
 function inferRecordingFileName(audio: Blob) {

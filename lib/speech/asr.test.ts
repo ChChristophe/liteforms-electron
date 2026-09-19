@@ -130,6 +130,42 @@ describe("new STT adapters", () => {
     expect(init.body).toBeInstanceOf(Uint8Array);
   });
 
+  it("surfaces the API error message when OpenAI STT returns 403", async () => {
+    const fetchMock = mockFetch(async () => Response.json(
+      { error: { message: "Your organization must be verified to use the model." } },
+      { status: 403 }
+    ));
+    const adapter = createAsrAdapter({ config: { provider: "openai", credential: "sk-key" }, fetch: fetchMock });
+
+    await expect(adapter.transcribe(new Blob(["audio"], { type: "audio/webm" }))).rejects.toThrow(
+      "STT provider failed (403: Your organization must be verified to use the model.)"
+    );
+  });
+
+  it("sends chunking_strategy and omits prompt/language for gpt-4o-transcribe-diarize", async () => {
+    const fetchMock = mockFetch(async () => Response.json({ text: "diarized" }));
+    const adapter = createAsrAdapter({
+      config: { provider: "openai", credential: "sk-key", model: "gpt-4o-transcribe-diarize", language: "en", prompt: "context" },
+      fetch: fetchMock
+    });
+
+    await expect(adapter.transcribe(new Blob(["audio"], { type: "audio/webm" }))).resolves.toMatchObject({ text: "diarized" });
+    const body = firstFetchCall(fetchMock).init.body as FormData;
+    expect(body.get("model")).toBe("gpt-4o-transcribe-diarize");
+    expect(body.get("chunking_strategy")).toBe("auto");
+    expect(body.get("prompt")).toBeNull();
+    expect(body.get("language")).toBeNull();
+  });
+
+  it("falls back to the bare status when the STT error body is not JSON", async () => {
+    const fetchMock = mockFetch(async () => new Response("upstream unavailable", { status: 502 }));
+    const adapter = createAsrAdapter({ config: { provider: "openai", credential: "sk-key" }, fetch: fetchMock });
+
+    await expect(adapter.transcribe(new Blob(["audio"], { type: "audio/webm" }))).rejects.toThrow(
+      "STT provider failed (502)"
+    );
+  });
+
 });
 
 function stubAudioContext() {
